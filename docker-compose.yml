@@ -19,6 +19,8 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - OLLAMA_URL=http://ollama:11434
+     # Use first URL if ollama is not downloaded. Use second if it is downloaded
+     # - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_URL=http://host.docker.internal:11434
     depends_on:
       - ollama
