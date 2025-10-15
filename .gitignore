@@ -1,0 +1,9 @@
+# Node deps
+ui/node_modules/
+
+# Ollama model cache (HUGE - do not commit)
+ollama/
+
+# OS junk
+.DS_Store
+Thumbs.db
