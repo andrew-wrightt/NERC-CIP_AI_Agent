@@ -12,7 +12,7 @@
       <h1>Mistral Local Chat</h1>
       <div class="controls">
         <label>Model <input id="model" value="mistral:instruct"/></label>
-        <!--    Put here for visibility/flexibility. We can change this to a different model if we want. -->
+        <!--    Put here for visibility/flexibility. We can change this  to a different model if we want. -->
         <label>Temperature <input id="temp" type="number" step="0.1" min="0" max="1.5" value="0.7"/></label> 
         <!--    Used for testing purposes. Lower values = deterministic answers, Higher values = random/rambling answers.
                 For our purposes, something like 0.7 will probably be the best, but may be adjusted. -->
@@ -20,12 +20,25 @@
         <!--    Used for testing purposes. Determines max length of response by agent API   -->
       </div>
     </header>
-    <main id="chat"></main>
-    <footer>
-      <textarea id="prompt" rows="3" placeholder="Type your message..."></textarea>
-      <button id="send">Send</button>
-    </footer>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+     <main id="chat" class="chat"></main>
+     <footer>
+    <textarea id="prompt" rows="3" placeholder="Type your message..."></textarea>
+    <button id="send">Send</button>
+  </footer>
   </div>
+    <template id="msg-tpl">
+      <article class="msg">
+       <div class="avatar" aria-hidden="true"></div>
+       <div class="bubble">
+        <div class="content"></div>
+          <details class="cites" hidden>
+          <summary>Sources</summary>
+        <ul class="sources"></ul>
+      </details>
+  </div>
+  </article>
+  </template>
   <script src="app.js"></script>
 </body>
 </html>
