@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import pdfParse from "pdf-parse";
+import { createHash } from "crypto"; // <-- for stable cache keys
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,39 @@ app.use(express.static(path.join(__dirname, "public")));
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const CHAT_MODEL = "mistral:instruct";
 const EMBED_MODEL = "nomic-embed-text";
+
+// === CACHE: persistent cache for embeddings of indexed documents ===
+const CACHE_PATH = path.join(__dirname, ".rag-embed-cache.json");
+let embedCache = Object.create(null); // { hash(text) : number[] }
+
+/** Load cache file if present */
+async function loadEmbedCache() {
+  try {
+    const data = await fs.readFile(CACHE_PATH, "utf8");
+    const parsed = JSON.parse(data);
+    if (parsed && typeof parsed === "object") embedCache = parsed;
+    console.log(`[cache] Loaded ${Object.keys(embedCache).length} vectors from ${path.basename(CACHE_PATH)}`);
+  } catch {
+    console.log("[cache] No existing cache, starting fresh");
+  }
+}
+
+/** Persist cache atomically to disk */
+async function saveEmbedCache() {
+  try {
+    const tmp = CACHE_PATH + ".tmp";
+    await fs.writeFile(tmp, JSON.stringify(embedCache), "utf8");
+    // atomic-ish replace
+    await fs.rename(tmp, CACHE_PATH);
+    console.log(`[cache] Saved ${Object.keys(embedCache).length} vectors`);
+  } catch (e) {
+    console.warn("[cache] Save failed:", e.message);
+  }
+}
+
+function hashText(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
 
 // ---------------------------
 // Tiny vector + retrieval lib
@@ -78,10 +112,46 @@ async function embedTexts(texts) {
   return Promise.all(texts.map(t => embedTextSingle(t)));
 }
 
+/** === CACHE-AWARE: embed list but reuse cached vectors for known texts (for corpus only) */
+async function embedTextsWithCache(texts) {
+  // Resolve in original order
+  const results = new Array(texts.length);
+  const misses = [];
+  const missIdx = [];
+
+  for (let i = 0; i < texts.length; i++) {
+    const t = texts[i] || "";
+    const key = hashText(t);
+    const cached = embedCache[key];
+    if (Array.isArray(cached)) {
+      results[i] = cached;
+    } else {
+      misses.push(t);
+      missIdx.push(i);
+    }
+  }
+
+  if (misses.length) {
+    const newVecs = await embedTexts(misses);
+    for (let k = 0; k < missIdx.length; k++) {
+      const i = missIdx[k];
+      const t = texts[i] || "";
+      const key = hashText(t);
+      const vec = newVecs[k];
+      results[i] = vec;
+      // Update cache
+      embedCache[key] = vec;
+    }
+  }
+
+  return results;
+}
+
 // ---------------------------
 // Corpus indexing (PDFs in /public)
 // ---------------------------
 const corpus = []; // {chunk, source, href, embedding}
+
 async function indexPublicPDFs() {
   corpus.length = 0;
   const publicDir = path.join(__dirname, "public");
@@ -99,7 +169,10 @@ async function indexPublicPDFs() {
     const batchSize = 32;
     for (let i = 0; i < chunks.length; i += batchSize) {
       const slice = chunks.slice(i, i + batchSize);
-      const vecs = await embedTexts(slice);
+
+      // === use cached embeddings for corpus ===
+      const vecs = await embedTextsWithCache(slice);
+
       for (let j = 0; j < slice.length; j++) {
         corpus.push({
           chunk: slice[j],
@@ -110,17 +183,21 @@ async function indexPublicPDFs() {
       }
     }
     console.log(`Indexed ${pdfName}: ${chunks.length} chunks`);
+    // Save cache periodically for long corpora
+    await saveEmbedCache();
   }
   console.log(`Total chunks indexed: ${corpus.length}`);
 }
 
-// call once on boot
+// Load cache, then index once on boot
+await loadEmbedCache();
 await indexPublicPDFs();
 
 // optional: simple endpoint to rebuild index if you add/replace PDFs at runtime
 app.post("/api/reindex", async (_req, res) => {
   try {
     await indexPublicPDFs();
+    await saveEmbedCache();
     res.json({ ok: true, chunks: corpus.length });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -132,6 +209,7 @@ app.post("/api/reindex", async (_req, res) => {
 // ---------------------------
 async function retrieveTopK(query, k = 6) {
   if (!corpus.length) return [];
+  // NOTE: we do NOT cache query embeddings; only corpus chunks
   const qlist = await embedTexts([query || ""]);
   const qvec = qlist[0];
 
@@ -241,3 +319,11 @@ app.post("/api/chat", async (req, res) => {
 app.listen(5173, () => {
   console.log(`UI running on http://localhost:5173`);
 });
+
+// Save cache on shutdown signals, best-effort
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, async () => {
+    await saveEmbedCache();
+    process.exit(0);
+  });
+}
