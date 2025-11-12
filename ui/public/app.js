@@ -2,13 +2,34 @@ const chatEl   = document.getElementById("chat");
 const promptEl = document.getElementById("prompt");
 const sendBtn  = document.getElementById("send");
 const statusEl = document.getElementById("status");
-
 const uploadBtn   = document.getElementById("upload");
 const filePicker  = document.getElementById("filepicker");
 const uploadStatusEl = document.getElementById("upload-status");
 
-// Conversation history (OpenAI-style)
+// conversation history
 const messages = [{ role: "system", content: "You are a helpful, concise assistant." }];
+
+// theme logic
+const themeToggle = document.getElementById("theme-toggle");
+
+function setTheme(mode) {
+  document.documentElement.setAttribute("data-theme", mode);
+  try { localStorage.setItem("theme", mode); } catch {}
+}
+
+(function initTheme() {
+  const saved = (() => { try { return localStorage.getItem("theme"); } catch { return null; } })();
+  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const mode = saved || (prefersDark ? "dark" : "light");
+  setTheme(mode);
+  if (themeToggle) themeToggle.checked = mode === "dark";
+})();
+
+if (themeToggle) {
+  themeToggle.addEventListener("change", () => {
+    setTheme(themeToggle.checked ? "dark" : "light");
+  });
+}
 
 // Tiny markdown: inline code + bold (no links)
 function mdLite(s) {
@@ -19,7 +40,7 @@ function mdLite(s) {
 }
 
 function setBusy(b) {
-  sendBtn.disabled = b;
+  if (sendBtn) sendBtn.disabled = b;
   if (!statusEl) return;
   statusEl.classList.toggle("loading", b);
   statusEl.textContent = b ? "Retrieving context and generating…" : "";
@@ -43,6 +64,67 @@ function addBubble(role, text) {
   chatEl.appendChild(div);
   chatEl.scrollTop = chatEl.scrollHeight;
   return div;
+}
+
+async function refreshUploads() {
+  try {
+    const res = await fetch("/api/uploads");
+    const data = await res.json();
+    const listEl = document.getElementById("uploads-list");
+    if (!listEl) return;
+
+    listEl.innerHTML = "";
+    if (!data?.ok || !Array.isArray(data.uploads) || data.uploads.length === 0) {
+      const li = document.createElement("li");
+      li.textContent = "No uploaded files yet.";
+      listEl.appendChild(li);
+      return;
+    }
+
+    data.uploads.forEach(({ filename, storedAs, pages, href }) => {
+      const li = document.createElement("li");
+
+      const left = document.createElement("div");
+      left.className = "meta";
+      const a = document.createElement("a");
+      a.textContent = filename;
+      a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      left.appendChild(a);
+      if (pages != null) {
+        left.appendChild(document.createTextNode(`  ·  ${pages} page(s)`));
+      }
+
+      const del = document.createElement("button");
+      del.textContent = "Delete";
+      del.addEventListener("click", async () => {
+        if (!confirm(`Delete "${filename}" from uploads and index?`)) return;
+        del.disabled = true;
+        try {
+          const r = await fetch(`/api/uploads/${encodeURIComponent(storedAs)}`, { method: "DELETE" });
+          const j = await r.json();
+          if (!r.ok || !j?.ok) {
+            alert(j?.error || "Delete failed");
+          } else {
+            li.remove();
+            const s = document.getElementById("upload-status");
+            if (s) s.textContent = `Deleted ${filename} (${j.removedChunks} chunks removed)`;
+          }
+        } catch (e) {
+          alert(e?.message || "Delete error");
+        } finally {
+          del.disabled = false;
+        }
+      });
+
+      li.appendChild(left);
+      li.appendChild(del);
+      listEl.appendChild(li);
+    });
+  } catch (e) {
+    console.error("refreshUploads error:", e);
+  }
 }
 
 async function sendMessage() {
@@ -70,8 +152,7 @@ async function sendMessage() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // model/temperature/max_tokens removed; server has sane defaults
-      body: JSON.stringify({ messages })
+      body: JSON.stringify({ messages }) // model/temperature/max_tokens removed; server has defaults
     });
 
     if (!res.ok || !res.body) {
@@ -151,11 +232,11 @@ async function sendMessage() {
   }
 }
 
-// Upload handling
+// Single, definitive upload function (no duplicates!)
 async function uploadFiles(files) {
   if (!files || files.length === 0) return;
-  uploadBtn.disabled = true;
-  uploadStatusEl.textContent = "Uploading and indexing…";
+  if (uploadBtn) uploadBtn.disabled = true;
+  if (uploadStatusEl) uploadStatusEl.textContent = "Uploading and indexing…";
 
   try {
     const fd = new FormData();
@@ -163,28 +244,41 @@ async function uploadFiles(files) {
 
     const res = await fetch("/api/upload", { method: "POST", body: fd });
     const data = await res.json();
-    if (!res.ok || !data?.ok) {
-      throw new Error(data?.error || "Upload failed");
-    }
+    if (!res.ok || !data?.ok) throw new Error(data?.error || "Upload failed");
 
     const names = (data.indexed || []).map(x => x.file).join(", ");
-    uploadStatusEl.textContent = `Indexed: ${names || "files"} (Total chunks: ${data.totalChunks ?? "?"})`;
+    if (uploadStatusEl) uploadStatusEl.textContent =
+      `Indexed: ${names || "files"} (Total chunks: ${data.totalChunks ?? "?"})`;
+
+    // refresh file manager list
+    refreshUploads();
   } catch (e) {
-    uploadStatusEl.textContent = e?.message || "Upload error.";
+    if (uploadStatusEl) uploadStatusEl.textContent = e?.message || "Upload error.";
+    console.error("uploadFiles error:", e);
   } finally {
-    uploadBtn.disabled = false;
-    filePicker.value = ""; // reset selection
+    if (uploadBtn) uploadBtn.disabled = false;
+    if (filePicker) filePicker.value = ""; // reset selection
   }
 }
 
-// Wire events
-promptEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage();
-  }
-});
-sendBtn.addEventListener("click", sendMessage);
+// Wire events (guard for missing elements just in case)
+if (promptEl) {
+  promptEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+}
+if (sendBtn) sendBtn.addEventListener("click", sendMessage);
 
-uploadBtn.addEventListener("click", () => filePicker.click());
-filePicker.addEventListener("change", (e) => uploadFiles(e.target.files));
+if (uploadBtn && filePicker) {
+  uploadBtn.addEventListener("click", () => filePicker.click());
+  filePicker.addEventListener("change", (e) => uploadFiles(e.target.files));
+}
+
+// File manager opens -> refresh
+const mgr = document.getElementById("mgr");
+mgr?.addEventListener("toggle", () => {
+  if (mgr.open) refreshUploads();
+});

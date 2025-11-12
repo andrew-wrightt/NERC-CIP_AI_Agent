@@ -14,10 +14,19 @@
       <!-- Right-side controls: single Upload button + status -->
       <div class="controls">
         <!-- Hidden file input -->
-        <input id="filepicker" type="file" accept=".pdf,.txt,.md" multiple hidden />
+        <input id="filepicker" type="file" accept=".pdf,.txt,.md" multiple class="visually-hidden" />
         <!-- Visible button that matches Send styling -->
         <button id="upload" type="button">Upload Files</button>
         <div id="upload-status" class="status" aria-live="polite"></div>
+        <details id="mgr" class="mgr">
+          <summary>Manage Files</summary>
+          <ul id="uploads-list" class="uploads"></ul>
+        </details>
+        <label class="toggle" title="Toggle dark mode">
+          <input type="checkbox" id="theme-toggle" aria-label="Toggle dark mode" />
+          <span class="slider"></span>
+          <span class="toggle-text">Dark</span>
+        </label>
       </div>
     </header>
 

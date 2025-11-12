@@ -165,6 +165,51 @@ async function embedTextsWithCache(texts) {
  */
 const corpus = [];
 
+// Build an index of uploaded files from the in-memory corpus
+function listUploadedFromCorpus() {
+  const byStored = new Map(); // storedAs -> { filename, storedAs, pages:Set, href }
+  for (const c of corpus) {
+    if (c?.meta?.origin !== "upload") continue;
+    const { filename, storedAs, page } = c.meta || {};
+    if (!storedAs || !filename) continue;
+    if (!byStored.has(storedAs)) {
+      byStored.set(storedAs, {
+        filename,
+        storedAs,
+        href: `/uploads/${storedAs}`,
+        pages: new Set()
+      });
+    }
+    if (Number.isFinite(page)) byStored.get(storedAs).pages.add(page);
+  }
+  // normalize pages count
+  return Array.from(byStored.values()).map(x => ({
+    filename: x.filename,
+    storedAs: x.storedAs,
+    href: x.href,
+    pages: x.pages.size || null
+  }));
+}
+
+// Remove all corpus chunks belonging to a stored upload
+function removeUploadFromCorpus(storedAs) {
+  let removed = 0;
+  for (let i = corpus.length - 1; i >= 0; i--) {
+    const m = corpus[i]?.meta;
+    if (m?.origin === "upload" && m?.storedAs === storedAs) {
+      corpus.splice(i, 1);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+// Very defensive filename guard (no path traversal)
+function isSafeStoredName(name) {
+  return typeof name === "string" && /^[A-Za-z0-9._-]+$/.test(name);
+}
+
+
 // FAST, reliable: index public PDFs as a single text stream (ensures server starts)
 async function indexPublicPDFs() {
   // rebuild just the public part; keep uploads intact if you want
@@ -341,6 +386,46 @@ app.post(
     }
   }
 );
+
+// List uploaded files (derived from corpus)
+app.get("/api/uploads", async (_req, res) => {
+  try {
+    const items = listUploadedFromCorpus();
+    res.json({ ok: true, uploads: items, totalUploads: items.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Delete an uploaded file by its stored name (as saved on disk)
+app.delete("/api/uploads/:storedAs", async (req, res) => {
+  try {
+    const storedAs = req.params.storedAs;
+
+    if (!isSafeStoredName(storedAs)) {
+      return res.status(400).json({ ok: false, error: "Invalid file id" });
+    }
+
+    // Confirm this file exists in corpus as an *uploaded* doc
+    const listed = listUploadedFromCorpus();
+    const found = listed.find(x => x.storedAs === storedAs);
+    if (!found) {
+      return res.status(404).json({ ok: false, error: "Upload not found" });
+    }
+
+    // Remove from corpus
+    const removedChunks = removeUploadFromCorpus(storedAs);
+
+    // Remove from disk (ignore if already gone)
+    const abs = path.join(UPLOAD_DIR, storedAs);
+    try { await fs.unlink(abs); } catch {}
+
+    await saveEmbedCache(); // cache keys remain usable for other texts; just persist state
+    res.json({ ok: true, removedChunks, removedFile: storedAs, totalChunks: corpus.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // Optional: rebuild from /public PDFs (keeps uploads intact)
 app.post("/api/reindex", async (_req, res) => {
