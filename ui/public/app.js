@@ -9,6 +9,12 @@ const uploadStatusEl = document.getElementById("upload-status");
 // conversation history
 const messages = [{ role: "system", content: "You are a helpful, concise assistant." }];
 
+// NEW: store last latency for #47
+let lastLatency = {
+  firstTokenMs: 0,
+  totalMs: 0,
+};
+
 // theme logic
 const themeToggle = document.getElementById("theme-toggle");
 
@@ -131,6 +137,10 @@ async function sendMessage() {
   const content = promptEl.value.trim();
   if (!content) return;
 
+  // NEW: start timing for this request
+  const startTs = performance.now();
+  let firstTokenMs = null;
+
   promptEl.value = "";
   setBusy(true);
 
@@ -182,6 +192,11 @@ async function sendMessage() {
 
         const piece = obj?.message?.content ?? "";
         if (piece) {
+          // NEW: capture time to first token once
+          if (firstTokenMs === null) {
+            firstTokenMs = performance.now() - startTs;
+          }
+
           assembled += piece;
           if (contentEl !== assistantBubble) {
             contentEl.innerHTML = mdLite(assembled);
@@ -219,6 +234,18 @@ async function sendMessage() {
             });
             citesBox.hidden = false;
           }
+
+          // NEW: compute and store latency when stream is done
+          const totalMs = performance.now() - startTs;
+          lastLatency = {
+            firstTokenMs: firstTokenMs ?? 0,
+            totalMs,
+          };
+
+          console.log(
+            `[Latency] first token: ${Math.round(lastLatency.firstTokenMs)} ms,` +
+            ` full response: ${Math.round(lastLatency.totalMs)} ms`
+          );
         }
       }
     }
@@ -229,6 +256,12 @@ async function sendMessage() {
   } finally {
     setBusy(false);
     avatarEl?.classList.remove("loading");
+
+    // show last latency in the status bar
+    if (statusEl && lastLatency.totalMs) {
+      const seconds = (lastLatency.totalMs / 1000).toFixed(1);
+      statusEl.textContent = `Finished in ${seconds} seconds…`;
+    }
   }
 }
 
