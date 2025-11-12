@@ -4,6 +4,10 @@ ui/node_modules/
 # Ollama model cache (HUGE - do not commit)
 ollama/
 
+# Uploaded docs and local embed cache
+ui/uploads/
+ui/.rag-embed-cache.json
+
 # OS junk
 .DS_Store
 Thumbs.db

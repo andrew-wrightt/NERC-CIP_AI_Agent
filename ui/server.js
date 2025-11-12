@@ -4,24 +4,39 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import pdfParse from "pdf-parse";
-import { createHash } from "crypto"; // <-- for stable cache keys
+import { createHash } from "crypto";
+import multer from "multer";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
 
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const CHAT_MODEL = "mistral:instruct";
+// ---- Static folders ----
+const PUBLIC_DIR  = path.join(__dirname, "public");
+const UPLOAD_DIR  = path.join(__dirname, "uploads");
+await fs.mkdir(PUBLIC_DIR, { recursive: true });
+await fs.mkdir(UPLOAD_DIR, { recursive: true });
+
+app.use(express.static(PUBLIC_DIR));
+app.use("/uploads", express.static(UPLOAD_DIR));
+
+// ---- Config ----
+const OLLAMA_URL  = process.env.OLLAMA_URL || "http://localhost:11434";
+const CHAT_MODEL  = "mistral:instruct";
 const EMBED_MODEL = "nomic-embed-text";
 
 // === CACHE: persistent cache for embeddings of indexed documents ===
-const CACHE_PATH = path.join(__dirname, ".rag-embed-cache.json");
-let embedCache = Object.create(null); // { hash(text) : number[] }
+const CACHE_DIR = path.join(__dirname, "cache");
+await fs.mkdir(CACHE_DIR, { recursive: true });
+const CACHE_PATH = path.join(CACHE_DIR, "rag-embed-cache.json");
+let embedCache = Object.create(null);
 
-/** Load cache file if present */
+function hashText(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
 async function loadEmbedCache() {
   try {
     const data = await fs.readFile(CACHE_PATH, "utf8");
@@ -33,12 +48,10 @@ async function loadEmbedCache() {
   }
 }
 
-/** Persist cache atomically to disk */
 async function saveEmbedCache() {
   try {
     const tmp = CACHE_PATH + ".tmp";
     await fs.writeFile(tmp, JSON.stringify(embedCache), "utf8");
-    // atomic-ish replace
     await fs.rename(tmp, CACHE_PATH);
     console.log(`[cache] Saved ${Object.keys(embedCache).length} vectors`);
   } catch (e) {
@@ -46,41 +59,42 @@ async function saveEmbedCache() {
   }
 }
 
-function hashText(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-// ---------------------------
-// Tiny vector + retrieval lib
-// ---------------------------
+// ============================
+// Tiny vector math + chunking
+// ============================
 function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
 function norm(a) { return Math.sqrt(dot(a, a)); }
 function cosineSim(a, b) { const na = norm(a), nb = norm(b); return na && nb ? dot(a, b) / (na * nb) : 0; }
 
-// simple word-ish chunker
-function chunkText(txt, targetChars = 1200, overlap = 200) {
-  const clean = txt.replace(/\s+/g, " ").trim();
+// Header-friendly chunking (a bit smaller + more overlap)
+function chunkText(txt, targetChars = 1000, overlap = 300) {
+  const clean = (txt || "").replace(/\s+/g, " ").trim();
   const chunks = [];
   let i = 0;
   while (i < clean.length) {
     const end = Math.min(clean.length, i + targetChars);
     let chunk = clean.slice(i, end);
-    // try to end on sentence boundary
-    const lastPeriod = chunk.lastIndexOf(". ");
-    if (end < clean.length && lastPeriod > targetChars * 0.6) {
-      chunk = chunk.slice(0, lastPeriod + 1);
+
+    // Prefer ending after Purpose:/period/semicolon if available
+    const lastStop = Math.max(
+      chunk.lastIndexOf(". "),
+      chunk.lastIndexOf("; "),
+      chunk.toLowerCase().lastIndexOf("purpose:")
+    );
+    if (end < clean.length && lastStop > targetChars * 0.5) {
+      chunk = chunk.slice(0, lastStop + 1);
     }
-    chunks.push(chunk);
+
+    if (chunk.trim()) chunks.push(chunk);
     i += Math.max(chunk.length - overlap, 1);
   }
   return chunks;
 }
 
-// ---------------------------
-// Embeddings via Ollama
-// ---------------------------
+// ===================
+// Ollama embeddings
+// ===================
 async function embedTextSingle(text) {
-  // Ollama reliably supports the single "prompt" form
   const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -93,8 +107,6 @@ async function embedTextSingle(text) {
   }
 
   const data = await resp.json();
-
-  // Normalize a vector out of whatever shape we got back
   const vec =
     (Array.isArray(data?.embedding) && data.embedding) ||
     (Array.isArray(data?.embeddings) && data.embeddings[0]) ||
@@ -108,13 +120,11 @@ async function embedTextSingle(text) {
 }
 
 async function embedTexts(texts) {
-  // Run singles in parallel; keeps behavior consistent across Ollama versions
   return Promise.all(texts.map(t => embedTextSingle(t)));
 }
 
-/** === CACHE-AWARE: embed list but reuse cached vectors for known texts (for corpus only) */
+// Cache-aware embedding for corpus texts
 async function embedTextsWithCache(texts) {
-  // Resolve in original order
   const results = new Array(texts.length);
   const misses = [];
   const missIdx = [];
@@ -139,61 +149,200 @@ async function embedTextsWithCache(texts) {
       const key = hashText(t);
       const vec = newVecs[k];
       results[i] = vec;
-      // Update cache
-      embedCache[key] = vec;
+      embedCache[key] = vec; // persist in-memory
     }
   }
 
   return results;
 }
 
-// ---------------------------
-// Corpus indexing (PDFs in /public)
-// ---------------------------
-const corpus = []; // {chunk, source, href, embedding}
+// ===================
+// Corpus management
+// ===================
+/**
+ * corpus entries:
+ * { chunk, source, href, embedding, meta?: { origin, filename, storedAs?, page?, chunkIndex? } }
+ */
+const corpus = [];
 
+// FAST, reliable: index public PDFs as a single text stream (ensures server starts)
 async function indexPublicPDFs() {
-  corpus.length = 0;
-  const publicDir = path.join(__dirname, "public");
-  const files = await fs.readdir(publicDir);
-  const pdfs = files.filter(f => f.toLowerCase().endsWith(".pdf"));
+  // rebuild just the public part; keep uploads intact if you want
+  for (let i = corpus.length - 1; i >= 0; i--) {
+    if (corpus[i]?.meta?.origin === "public") corpus.splice(i, 1);
+  }
+
+  const files = await fs.readdir(PUBLIC_DIR);
+  const pdfs  = files.filter(f => f.toLowerCase().endsWith(".pdf"));
 
   for (const pdfName of pdfs) {
-    const filePath = path.join(publicDir, pdfName);
+    const filePath = path.join(PUBLIC_DIR, pdfName);
     const buf = await fs.readFile(filePath);
-    const parsed = await pdfParse(buf);
+    const parsed = await pdfParse(buf);               // <- simple & stable
     const chunks = chunkText(parsed.text || "");
     if (!chunks.length) continue;
 
-    // embed in batches to avoid large payloads
     const batchSize = 32;
     for (let i = 0; i < chunks.length; i += batchSize) {
       const slice = chunks.slice(i, i + batchSize);
-
-      // === use cached embeddings for corpus ===
-      const vecs = await embedTextsWithCache(slice);
+      const vecs  = await embedTextsWithCache(slice);
 
       for (let j = 0; j < slice.length; j++) {
         corpus.push({
           chunk: slice[j],
           source: `${pdfName} (pseudopages)`,
-          href: `/${pdfName}`, // served from /public
-          embedding: vecs[j]
+          href: `/${pdfName}`,
+          embedding: vecs[j],
+          meta: { filename: pdfName, origin: "public", chunkIndex: i + j }
         });
       }
     }
     console.log(`Indexed ${pdfName}: ${chunks.length} chunks`);
-    // Save cache periodically for long corpora
-    await saveEmbedCache();
+    await saveEmbedCache(); // periodic save
   }
-  console.log(`Total chunks indexed: ${corpus.length}`);
+
+  console.log(`Total chunks indexed (public): ${corpus.length}`);
 }
 
-// Load cache, then index once on boot
+// Load cache and initial index (synchronous like your working build)
 await loadEmbedCache();
 await indexPublicPDFs();
 
-// optional: simple endpoint to rebuild index if you add/replace PDFs at runtime
+// ==============
+// Multer upload
+// ==============
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+  filename: (_req, file, cb) => {
+    const safe = `${Date.now()}-${file.originalname.replace(/[^\w.\-]+/g, "_")}`;
+    cb(null, safe);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB
+  fileFilter: (_req, file, cb) => {
+    const ext = (file.originalname.split(".").pop() || "").toLowerCase();
+    const ok = ["pdf", "txt", "md"].includes(ext);
+    if (ok) cb(null, true);
+    else cb(null, false); // ignore unsupported parts silently
+  }
+});
+
+// Page-aware extraction ONLY for uploads (so startup stays fast)
+async function extractUploadedFilePages(absPath, mimetype, originalname) {
+  const buf = await fs.readFile(absPath);
+  const ext = (originalname.split(".").pop() || "").toLowerCase();
+  const isPDF = mimetype === "application/pdf" || ext === "pdf";
+  const isTXT = mimetype.startsWith("text/") || ext === "txt" || ext === "md";
+
+  if (isPDF) {
+    // Use pdf-parse pagerender but avoid async/await inside it (more reliable)
+    const pages = [];
+    await pdfParse(buf, {
+      pagerender: (page) =>
+        page.getTextContent().then((tc) => {
+          const text = tc.items.map(i => (i.str || "")).join(" ").replace(/\s+/g, " ").trim();
+          pages.push(text);
+          return ""; // let pdf-parse concatenate internally; we track pages ourselves
+        })
+    });
+    // Convert to [{page,text}]
+    const out = [];
+    for (let i = 0; i < pages.length; i++) {
+      let t = (pages[i] || "").trim();
+      if (!t) continue;
+      t = t.replace(/(Purpose\s*:)(\s*)/i, "$1 ");
+      out.push({ page: i + 1, text: t });
+    }
+    if (out.length) return out;
+
+    // fallback
+    const parsed = await pdfParse(buf);
+    return [{ page: 1, text: parsed.text || "" }];
+  }
+
+  if (isTXT) {
+    const txt = buf.toString("utf8");
+    return [{ page: 1, text: txt }];
+  }
+
+  throw new Error("Unsupported file type");
+}
+
+// List corpus by source
+app.get("/api/corpus", (_req, res) => {
+  const bySource = corpus.reduce((m, c) => {
+    m[c.source] = (m[c.source] || 0) + 1;
+    return m;
+  }, {});
+  res.json({ sources: bySource, totalChunks: corpus.length });
+});
+
+// Upload & index (accept common field names: 'files' or 'file'), with page-aware handling
+app.post(
+  "/api/upload",
+  upload.fields([{ name: "files", maxCount: 20 }, { name: "file", maxCount: 20 }]),
+  async (req, res) => {
+    try {
+      console.log("headers:", req.headers["content-type"]);
+      console.log("body keys:", Object.keys(req.body || {}));
+      console.log("raw files obj keys:", req.files ? Object.keys(req.files) : []);
+
+      const files = [
+        ...(req.files?.files || []),
+        ...(req.files?.file  || [])
+      ];
+
+      if (files.length === 0) {
+        return res.status(400).json({ ok: false, error: "No files received" });
+      }
+
+      const results = [];
+      for (const f of files) {
+        const pages = await extractUploadedFilePages(
+          f.path,
+          f.mimetype || "application/octet-stream",
+          f.originalname
+        );
+
+        for (const { page, text } of pages) {
+          const chunks = chunkText(text, 1000, 300).filter(Boolean);
+          const vecs = await embedTextsWithCache(chunks);
+
+          for (let i = 0; i < chunks.length; i++) {
+            corpus.push({
+              chunk: chunks[i],
+              source: `${f.originalname} p.${page}`,
+              href: `/uploads/${f.filename}#page=${page}`,
+              embedding: vecs[i],
+              meta: {
+                filename: f.originalname,
+                storedAs: f.filename,
+                uploadedAt: new Date().toISOString(),
+                origin: "upload",
+                page,
+                chunkIndex: i
+              }
+            });
+          }
+        }
+
+        results.push({ file: f.originalname });
+        console.log(`Uploaded & indexed ${f.originalname}`);
+      }
+
+      await saveEmbedCache();
+      res.json({ ok: true, indexed: results, totalChunks: corpus.length });
+    } catch (e) {
+      console.error("upload handler error:", e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+// Optional: rebuild from /public PDFs (keeps uploads intact)
 app.post("/api/reindex", async (_req, res) => {
   try {
     await indexPublicPDFs();
@@ -204,25 +353,52 @@ app.post("/api/reindex", async (_req, res) => {
   }
 });
 
-// ---------------------------
-// RAG Chat: retrieve + stream
-// ---------------------------
+// ===============================
+// Hybrid retrieval (cosine + keyword)
+// ===============================
+function normalize(s = "") { return s.toLowerCase().replace(/\s+/g, " ").trim(); }
+function keywordScore(query, chunk) {
+  const q = normalize(query);
+  const c = normalize(chunk);
+
+  const keys = [];
+  const idMatch = q.match(/cip[-\s]?0?\d{2}(-\d+)?/g);
+  if (idMatch) keys.push(...idMatch.map(x => x.replace(/\s+/g, "")));
+  keys.push("purpose", "objective", "to protect", "confidentiality", "integrity", "communications between control centers");
+
+  let score = 0;
+  for (const k of keys) if (k && c.includes(k)) score += 1;
+  if (/\bpurpose\s*:/.test(c)) score += 3; // big boost for Purpose header
+  return score;
+}
+
 async function retrieveTopK(query, k = 6) {
   if (!corpus.length) return [];
-  // NOTE: we do NOT cache query embeddings; only corpus chunks
-  const qlist = await embedTexts([query || ""]);
-  const qvec = qlist[0];
-
-  if (!Array.isArray(qvec) || qvec.length === 0) {
-    console.warn("retrieveTopK: got empty query embedding");
-    return [];
-  }
+  const [qvec] = await embedTexts([query || ""]);
 
   const scored = corpus
-    .filter(c => Array.isArray(c.embedding) && c.embedding.length) // safety
-    .map((c, idx) => ({ idx, score: cosineSim(qvec, c.embedding) }))
+    .filter(c => Array.isArray(c.embedding) && c.embedding.length)
+    .map((c, idx) => {
+      const cos = cosineSim(qvec, c.embedding) || 0;
+      const kw  = keywordScore(query, c.chunk) || 0;
+      const blended = cos * 0.7 + Math.min(kw, 6) * 0.3;
+      return { idx, cos, kw, score: blended };
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, k);
+
+  if (!scored.some(s => s.kw > 0)) {
+    const id = (query.match(/cip[-\s]?0?\d{2}(-\d+)?/i) || [])[0];
+    if (id) {
+      const normId = id.toLowerCase().replace(/\s+/g, "");
+      const exacts = [];
+      for (let i = 0; i < corpus.length; i++) {
+        const c = normalize(corpus[i].chunk).replace(/\s+/g, "");
+        if (c.includes(normId)) exacts.push({ idx: i, score: 1e6 });
+      }
+      if (exacts.length) return exacts.slice(0, k).map(e => corpus[e.idx]);
+    }
+  }
 
   return scored.map(s => corpus[s.idx]);
 }
@@ -236,20 +412,22 @@ Quote exact requirement IDs and sections when relevant.
 CONTEXT BEGIN
 `;
   const body = chunks.map((c, i) =>
-`[${i+1}] Source: ${c.source}
+`[${i + 1}] Source: ${c.source}
 ${c.chunk}
 `).join("\n---\n");
   const footer = "\nCONTEXT END\n";
   return header + body + footer;
 }
 
+// ===============================
+// Retrieval + streaming RAG chat
+// ===============================
 app.post("/api/chat", async (req, res) => {
   const { model = CHAT_MODEL, messages = [], temperature = 0.3, max_tokens } = req.body;
 
-  // last user message (fall back to whole dialog if needed)
   const lastUser = [...messages].reverse().find(m => m.role === "user")?.content || "";
 
-  // RAG retrieval
+  // Retrieve relevant chunks
   let retrieved = [];
   try {
     retrieved = await retrieveTopK(lastUser, 6);
@@ -257,22 +435,14 @@ app.post("/api/chat", async (req, res) => {
     console.warn("Retrieve error:", e.message);
   }
 
-  const contextMsg = {
-    role: "system",
-    content: buildContextBlock(retrieved)
-  };
-
-  // enforce a system instruction that the model must not hallucinate
+  const contextMsg = { role: "system", content: buildContextBlock(retrieved) };
   const guardrailsMsg = {
     role: "system",
-    content:
-      "If the user's request is outside the supplied CONTEXT, reply: 'I don't know based on the provided documents.'"
+    content: "If the user's request is outside the supplied CONTEXT, reply: 'I don't know based on the provided documents.'"
   };
 
-  // Compose final message list: system guardrails + context + the prior conversation
   const toSend = [guardrailsMsg, contextMsg, ...messages];
 
-  // Kick off the request to Ollama with streaming enabled
   const upstream = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -288,7 +458,6 @@ app.post("/api/chat", async (req, res) => {
     })
   });
 
-  // Prepare response as NDJSON stream back to browser
   res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("X-Accel-Buffering", "no");
@@ -299,15 +468,12 @@ app.post("/api/chat", async (req, res) => {
     return;
   }
 
-  // forward chunks and then append our own final JSON line with sources
   try {
-    for await (const chunk of upstream.body) {
-      res.write(chunk);
-    }
+    for await (const chunk of upstream.body) res.write(chunk);
   } catch {
     // ignore midstream disconnects
   } finally {
-    const sources = retrieved.map((r) => ({
+    const sources = retrieved.map(r => ({
       source: r.source.replace(/\s+\(pseudopages\)$/, ""),
       href: r.href
     }));
@@ -316,11 +482,14 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// ============
+// // Start server
+// ============
 app.listen(5173, () => {
   console.log(`UI running on http://localhost:5173`);
 });
 
-// Save cache on shutdown signals, best-effort
+// Save cache on shutdown
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, async () => {
     await saveEmbedCache();

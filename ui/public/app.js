@@ -1,10 +1,11 @@
 const chatEl   = document.getElementById("chat");
 const promptEl = document.getElementById("prompt");
 const sendBtn  = document.getElementById("send");
-const modelEl  = document.getElementById("model");
-const tempEl   = document.getElementById("temp");
-const maxTokEl = document.getElementById("maxtok");
 const statusEl = document.getElementById("status");
+
+const uploadBtn   = document.getElementById("upload");
+const filePicker  = document.getElementById("filepicker");
+const uploadStatusEl = document.getElementById("upload-status");
 
 // Conversation history (OpenAI-style)
 const messages = [{ role: "system", content: "You are a helpful, concise assistant." }];
@@ -35,8 +36,7 @@ function addBubble(role, text) {
     chatEl.scrollTop = chatEl.scrollHeight;
     return node; // article.msg node
   }
-
-  // Fallback basic div
+  // Fallback
   const div = document.createElement("div");
   div.className = `msg ${role === "user" ? "user" : "assistant"}`;
   div.textContent = text || "";
@@ -49,19 +49,18 @@ async function sendMessage() {
   const content = promptEl.value.trim();
   if (!content) return;
 
-  // UI prep
   promptEl.value = "";
   setBusy(true);
 
-  // Render user bubble immediately
+  // user bubble
   addBubble("user", content);
   messages.push({ role: "user", content });
 
-  // Create assistant bubble we will stream into
+  // assistant bubble (stream target)
   const assistantBubble = addBubble("assistant", "");
   const contentEl = assistantBubble.querySelector?.(".content") || assistantBubble;
 
-  // Show spinner on avatar
+  // spinner on avatar
   const avatarEl = assistantBubble.querySelector?.(".avatar");
   avatarEl?.classList.add("loading");
 
@@ -71,12 +70,8 @@ async function sendMessage() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: modelEl.value,
-        messages,
-        temperature: Number(tempEl.value),
-        max_tokens: Number(maxTokEl.value)
-      })
+      // model/temperature/max_tokens removed; server has sane defaults
+      body: JSON.stringify({ messages })
     });
 
     if (!res.ok || !res.body) {
@@ -85,7 +80,7 @@ async function sendMessage() {
       return;
     }
 
-    // Stream NDJSON line-by-line
+    // Stream NDJSON
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
@@ -96,21 +91,14 @@ async function sendMessage() {
 
       buffer += decoder.decode(value, { stream: true });
 
-      // Split on newlines; keep last partial in buffer
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
 
       for (const line of lines) {
         if (!line.trim()) continue;
-
         let obj;
-        try {
-          obj = JSON.parse(line);
-        } catch {
-          continue;
-        }
+        try { obj = JSON.parse(line); } catch { continue; }
 
-        // Streamed tokens
         const piece = obj?.message?.content ?? "";
         if (piece) {
           assembled += piece;
@@ -122,17 +110,13 @@ async function sendMessage() {
           chatEl.scrollTop = chatEl.scrollHeight;
         }
 
-        // Completion lines
         if (obj?.done) {
           if (assembled.trim().length === 0) {
             contentEl.textContent = "(no response)";
           }
-
-          // Render sources only if provided as an array
           const citesBox   = assistantBubble.querySelector?.(".cites");
           const sourcesEl  = assistantBubble.querySelector?.(".sources");
           const sourcesArr = Array.isArray(obj.sources) ? obj.sources : [];
-
           if (citesBox && sourcesEl && sourcesArr.length > 0) {
             sourcesEl.innerHTML = "";
             sourcesArr.forEach((s) => {
@@ -158,7 +142,6 @@ async function sendMessage() {
       }
     }
 
-    // Save assistant turn
     messages.push({ role: "assistant", content: assembled || "(no response)" });
   } catch (e) {
     contentEl.textContent = e?.message || "Network error.";
@@ -168,12 +151,40 @@ async function sendMessage() {
   }
 }
 
-// Enter = send, Shift+Enter = newline
+// Upload handling
+async function uploadFiles(files) {
+  if (!files || files.length === 0) return;
+  uploadBtn.disabled = true;
+  uploadStatusEl.textContent = "Uploading and indexing…";
+
+  try {
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+
+    const res = await fetch("/api/upload", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || "Upload failed");
+    }
+
+    const names = (data.indexed || []).map(x => x.file).join(", ");
+    uploadStatusEl.textContent = `Indexed: ${names || "files"} (Total chunks: ${data.totalChunks ?? "?"})`;
+  } catch (e) {
+    uploadStatusEl.textContent = e?.message || "Upload error.";
+  } finally {
+    uploadBtn.disabled = false;
+    filePicker.value = ""; // reset selection
+  }
+}
+
+// Wire events
 promptEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
   }
 });
-
 sendBtn.addEventListener("click", sendMessage);
+
+uploadBtn.addEventListener("click", () => filePicker.click());
+filePicker.addEventListener("change", (e) => uploadFiles(e.target.files));
