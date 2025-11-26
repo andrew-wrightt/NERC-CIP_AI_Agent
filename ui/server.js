@@ -165,6 +165,61 @@ async function embedTextsWithCache(texts) {
  */
 const corpus = [];
 
+// Map like: { "CIP-005": { versions: ["CIP-005-3","CIP-005-6"], latest:"CIP-005-6", latestVersion:6 } }
+const standardMap = Object.create(null);
+
+/**
+ * Parse a CIP filename like "CIP-005-6.pdf" and register it.
+ * Returns { base, versioned } or null.
+ */
+function registerStandardFromFilename(pdfName) {
+  // Accept things like CIP-5-3.pdf, CIP005-6.pdf, CIP 005-6.pdf, etc.
+  const m = pdfName.match(/CIP[-\s]?(\d{1,3})[-\s]?(\d+)/i);
+  if (!m) return null;
+
+  const numRaw = m[1];
+  const verRaw = m[2];
+  const num = String(numRaw).padStart(3, "0"); // 5   -> "005"
+  const versionNum = parseInt(verRaw, 10);
+
+  const base = `CIP-${num}`;          // e.g. CIP-005
+  const versioned = `${base}-${versionNum}`; // e.g. CIP-005-6
+
+  const existing = standardMap[base];
+  if (!existing) {
+    standardMap[base] = {
+      versions: [versioned],
+      latest: versioned,
+      latestVersion: versionNum
+    };
+  } else {
+    if (!existing.versions.includes(versioned)) {
+      existing.versions.push(versioned);
+    }
+    if (versionNum > existing.latestVersion) {
+      existing.latest = versioned;
+      existing.latestVersion = versionNum;
+    }
+  }
+
+  return { base, versioned };
+}
+
+/**
+ * Normalize user queries like "CIP-005" / "CIP 5" / "CIP005"
+ * into: "CIP-005 (CIP-005-6)" so retrieval sees the versioned ID.
+ */
+function normalizeStandardsInQuery(question = "") {
+  return question.replace(/\bCIP[-\s]?(\d{1,3})(?![-\s]?\d)\b/gi, (match, numRaw) => {
+    const num = String(numRaw).padStart(3, "0"); // "5" -> "005"
+    const base = `CIP-${num}`;
+    const info = standardMap[base];
+    if (!info || !info.latest) return match; // unknown base; leave alone
+    // Preserve what the user wrote, but append the latest version so embeddings see it
+    return `${match} (${info.latest})`;
+  });
+}
+
 // Build an index of uploaded files from the in-memory corpus
 function listUploadedFromCorpus() {
   const byStored = new Map(); // storedAs -> { filename, storedAs, pages:Set, href }
@@ -220,8 +275,12 @@ async function indexPublicPDFs() {
   const files = await fs.readdir(PUBLIC_DIR);
   const pdfs  = files.filter(f => f.toLowerCase().endsWith(".pdf"));
 
-  for (const pdfName of pdfs) {
+     for (const pdfName of pdfs) {
     const filePath = path.join(PUBLIC_DIR, pdfName);
+
+    // NEW: register this PDF as a CIP standard version if it matches the pattern
+    const stdInfo = registerStandardFromFilename(pdfName); // { base, versioned } or null
+
     const buf = await fs.readFile(filePath);
     const parsed = await pdfParse(buf);               // <- simple & stable
     const chunks = chunkText(parsed.text || "");
@@ -230,18 +289,34 @@ async function indexPublicPDFs() {
     const batchSize = 32;
     for (let i = 0; i < chunks.length; i += batchSize) {
       const slice = chunks.slice(i, i + batchSize);
-      const vecs  = await embedTextsWithCache(slice);
+
+      // inject aliases (e.g. "CIP-005 CIP-005-6") into the embedded text
+      const textsForEmbedding = stdInfo
+        ? slice.map(t => `${stdInfo.base} ${stdInfo.versioned}\n${t}`)
+        : slice;
+
+      const vecs  = await embedTextsWithCache(textsForEmbedding);
 
       for (let j = 0; j < slice.length; j++) {
         corpus.push({
-          chunk: slice[j],
+          chunk: slice[j], // original chunk text for display
           source: `${pdfName} (pseudopages)`,
           href: `/${pdfName}`,
           embedding: vecs[j],
-          meta: { filename: pdfName, origin: "public", chunkIndex: i + j }
+          meta: {
+            filename: pdfName,
+            origin: "public",
+            chunkIndex: i + j,
+            ...(stdInfo ? {
+              standardBase: stdInfo.base,
+              standardVersion: stdInfo.versioned
+            } : {})
+          }
         });
       }
     }
+
+
     console.log(`Indexed ${pdfName}: ${chunks.length} chunks`);
     await saveEmbedCache(); // periodic save
   }
@@ -512,10 +587,13 @@ app.post("/api/chat", async (req, res) => {
 
   const lastUser = [...messages].reverse().find(m => m.role === "user")?.content || "";
 
-  // Retrieve relevant chunks
+  // normalize bare standards like "CIP-005" / "CIP 005" into "CIP-005 (CIP-005-6)"
+  const normalizedUser = normalizeStandardsInQuery(lastUser);
+
+  // Retrieve relevant chunks using the normalized query
   let retrieved = [];
   try {
-    retrieved = await retrieveTopK(lastUser, 6);
+    retrieved = await retrieveTopK(normalizedUser, 6);
   } catch (e) {
     console.warn("Retrieve error:", e.message);
   }
@@ -557,14 +635,25 @@ app.post("/api/chat", async (req, res) => {
     for await (const chunk of upstream.body) res.write(chunk);
   } catch {
     // ignore midstream disconnects
-  } finally {
-    const sources = retrieved.map(r => ({
-      source: r.source.replace(/\s+\(pseudopages\)$/, ""),
-      href: r.href
-    }));
+    } finally {
+    // Deduplicate sources so each PDF appears only once
+    const seen = new Set();
+    const sources = [];
+
+    for (const r of retrieved) {
+      if (!r) continue;
+      const label = (r.source || "").replace(/\s+\(pseudopages\)$/, "");
+      const href  = r.href || null;
+      const key   = `${label}|${href || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sources.push({ source: label, href });
+    }
+
     res.write(JSON.stringify({ done: true, sources }) + "\n");
     res.end();
   }
+
 });
 
 // ============
