@@ -534,21 +534,40 @@ function keywordScore(query, chunk) {
 
 async function retrieveTopK(query, k = 6) {
   if (!corpus.length) return [];
-  const [qvec] = await embedTexts([query || ""]);
+  const q = query || "";
+  const qNorm = normalize(q);
+
+  const [qvec] = await embedTexts([q]);
 
   const scored = corpus
     .filter(c => Array.isArray(c.embedding) && c.embedding.length)
     .map((c, idx) => {
-      const cos = cosineSim(qvec, c.embedding) || 0;
-      const kw  = keywordScore(query, c.chunk) || 0;
-      const blended = cos * 0.7 + Math.min(kw, 6) * 0.3;
-      return { idx, cos, kw, score: blended };
+      const cosBase = cosineSim(qvec, c.embedding) || 0;
+      let kw = keywordScore(q, c.chunk) || 0;
+
+      // boost matches on filename/source when user mentions them 
+      const fname = (c.meta?.filename || "").toLowerCase();
+      const sourceLabel = (c.source || "").toLowerCase();
+
+      let filenameBoost = 0;
+      if (fname && qNorm.includes(fname)) {
+        filenameBoost += 5;
+      }
+      if (sourceLabel && qNorm.includes(sourceLabel)) {
+        filenameBoost += 3;
+      }
+
+      kw += filenameBoost;
+
+      const blended = cosBase * 0.7 + Math.min(kw, 6) * 0.3;
+      return { idx, cos: cosBase, kw, score: blended };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, k);
 
+  // CIP exact-id fallback 
   if (!scored.some(s => s.kw > 0)) {
-    const id = (query.match(/cip[-\s]?0?\d{2}(-\d+)?/i) || [])[0];
+    const id = (q.match(/cip[-\s]?0?\d{2}(-\d+)?/i) || [])[0];
     if (id) {
       const normId = id.toLowerCase().replace(/\s+/g, "");
       const exacts = [];
@@ -563,11 +582,12 @@ async function retrieveTopK(query, k = 6) {
   return scored.map(s => corpus[s.idx]);
 }
 
+
 function buildContextBlock(chunks) {
   const header =
-`You are a NERC CIP domain assistant. Answer **only** using the CONTEXT below.
-If the answer is not present in the context, say you don't know.
-Quote exact requirement IDs and sections when relevant.
+`You are an assistant that must answer **only** using the CONTEXT below.
+If the answer is not present in the context, say:
+"I don't know based on the provided documents."
 
 CONTEXT BEGIN
 `;

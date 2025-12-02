@@ -79,19 +79,51 @@ body {
 .app { max-width: 850px; margin: 0 auto; display: grid; grid-template-rows: auto 1fr auto; height: 100vh; padding: 12px; gap: 12px; }
 header { display: flex; align-items: center; justify-content: space-between; }
 .controls { display: flex; gap: 12px; }
-label { display: flex; flex-direction: column; font-size: 12px; color: #555; }
+label { display: flex; flex-direction: column; font-size: 12px; color: car(--muted); }
 
 /* =========================
    FILE MANAGER
    ========================= */
-.mgr summary { cursor: pointer; color: var(--link); }
-.uploads { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.mgr summary {
+  cursor: pointer;
+  color: var(--link);
+}
+
+.uploads {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
 .uploads li {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 10px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--btn-bg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: var(--btn-bg);
   font-size: 14px;
 }
-.uploads .meta { color: var(--chip-text); }
+
+/* file name + page count text */
+.uploads .meta {
+  color: var(--chip-text);
+}
+
+/* links inside Manage Files */
+.uploads a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.uploads a:hover {
+  text-decoration: underline;
+}
+
+/* delete button */
 .uploads button {
   padding: 6px 10px;
   border: 1px solid var(--btn-border);
@@ -100,7 +132,11 @@ label { display: flex; flex-direction: column; font-size: 12px; color: #555; }
   color: var(--btn-text);
   cursor: pointer;
 }
-.uploads button:hover { background: var(--btn-bg-hover); }
+
+.uploads button:hover {
+  background: var(--btn-bg-hover);
+}
+
 
 /* =========================
    UPLOAD STATUS / BUTTONS
