@@ -8,7 +8,9 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - OLLAMA_URL=http://host.docker.internal:11434   # points to your standalone Ollama
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - SESSION_SECRET=change-this-to-a-long-random-string
     volumes:
       - ./ui/uploads:/app/uploads
       - ./ui/cache:/app/cache
+      - ./ui/data:/app/data   # persist users + sessions

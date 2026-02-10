@@ -3,9 +3,16 @@ import fetch from "node-fetch";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs/promises";
+import fsSync from "fs";
 import pdfParse from "pdf-parse";
 import { createHash } from "crypto";
 import multer from "multer";
+
+import session from "express-session";
+import SQLiteStoreFactory from "connect-sqlite3";
+
+import { authRouter } from "./auth/auth.routes.js";
+import { requireAuth } from "./auth/auth.middleware.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,17 +21,50 @@ const app = express();
 app.use(express.json());
 
 // ---- Static folders ----
-const PUBLIC_DIR  = path.join(__dirname, "public");
-const UPLOAD_DIR  = path.join(__dirname, "uploads");
+const PUBLIC_DIR = path.join(__dirname, "public");
+const UPLOAD_DIR = path.join(__dirname, "uploads");
 await fs.mkdir(PUBLIC_DIR, { recursive: true });
 await fs.mkdir(UPLOAD_DIR, { recursive: true });
 
 app.use(express.static(PUBLIC_DIR));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
+// ---- Persistent data dir for sessions + sqlite ----
+// This is relative to where node runs (ui/), matches db.js using process.cwd()/data
+const DATA_DIR = path.join(process.cwd(), "data");
+if (!fsSync.existsSync(DATA_DIR)) fsSync.mkdirSync(DATA_DIR, { recursive: true });
+
+// ---- Sessions (persistent) ----
+const SQLiteStore = SQLiteStoreFactory(session);
+
+app.set("trust proxy", 1);
+
+app.use(
+  session({
+    name: "sid",
+    secret: process.env.SESSION_SECRET || "dev_only_change_me",
+    resave: false,
+    saveUninitialized: false,
+    store: new SQLiteStore({
+      dir: DATA_DIR,
+      db: "sessions.sqlite",
+    }),
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 1000 * 60 * 60 * 8, // 8 hours
+    },
+  })
+);
+
+
+// ---- Auth routes (public) ----
+app.use("/api/auth", authRouter);
+
 // ---- Config ----
-const OLLAMA_URL  = process.env.OLLAMA_URL || "http://localhost:11434";
-const CHAT_MODEL  = "mistral:instruct";
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
+const CHAT_MODEL = "mistral:instruct";
 const EMBED_MODEL = "nomic-embed-text";
 
 // === CACHE: persistent cache for embeddings of indexed documents ===
@@ -42,7 +82,9 @@ async function loadEmbedCache() {
     const data = await fs.readFile(CACHE_PATH, "utf8");
     const parsed = JSON.parse(data);
     if (parsed && typeof parsed === "object") embedCache = parsed;
-    console.log(`[cache] Loaded ${Object.keys(embedCache).length} vectors from ${path.basename(CACHE_PATH)}`);
+    console.log(
+      `[cache] Loaded ${Object.keys(embedCache).length} vectors from ${path.basename(CACHE_PATH)}`
+    );
   } catch {
     console.log("[cache] No existing cache, starting fresh");
   }
@@ -62,9 +104,19 @@ async function saveEmbedCache() {
 // ============================
 // Tiny vector math + chunking
 // ============================
-function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
-function norm(a) { return Math.sqrt(dot(a, a)); }
-function cosineSim(a, b) { const na = norm(a), nb = norm(b); return na && nb ? dot(a, b) / (na * nb) : 0; }
+function dot(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
+}
+function norm(a) {
+  return Math.sqrt(dot(a, a));
+}
+function cosineSim(a, b) {
+  const na = norm(a),
+    nb = norm(b);
+  return na && nb ? dot(a, b) / (na * nb) : 0;
+}
 
 // Header-friendly chunking (a bit smaller + more overlap)
 function chunkText(txt, targetChars = 1000, overlap = 300) {
@@ -98,7 +150,7 @@ async function embedTextSingle(text) {
   const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: EMBED_MODEL, prompt: text })
+    body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
   });
 
   if (!resp.ok) {
@@ -120,7 +172,7 @@ async function embedTextSingle(text) {
 }
 
 async function embedTexts(texts) {
-  return Promise.all(texts.map(t => embedTextSingle(t)));
+  return Promise.all(texts.map((t) => embedTextSingle(t)));
 }
 
 // Cache-aware embedding for corpus texts
@@ -182,7 +234,7 @@ function registerStandardFromFilename(pdfName) {
   const num = String(numRaw).padStart(3, "0"); // 5   -> "005"
   const versionNum = parseInt(verRaw, 10);
 
-  const base = `CIP-${num}`;          // e.g. CIP-005
+  const base = `CIP-${num}`; // e.g. CIP-005
   const versioned = `${base}-${versionNum}`; // e.g. CIP-005-6
 
   const existing = standardMap[base];
@@ -190,7 +242,7 @@ function registerStandardFromFilename(pdfName) {
     standardMap[base] = {
       versions: [versioned],
       latest: versioned,
-      latestVersion: versionNum
+      latestVersion: versionNum,
     };
   } else {
     if (!existing.versions.includes(versioned)) {
@@ -215,7 +267,6 @@ function normalizeStandardsInQuery(question = "") {
     const base = `CIP-${num}`;
     const info = standardMap[base];
     if (!info || !info.latest) return match; // unknown base; leave alone
-    // Preserve what the user wrote, but append the latest version so embeddings see it
     return `${match} (${info.latest})`;
   });
 }
@@ -232,17 +283,16 @@ function listUploadedFromCorpus() {
         filename,
         storedAs,
         href: `/uploads/${storedAs}`,
-        pages: new Set()
+        pages: new Set(),
       });
     }
     if (Number.isFinite(page)) byStored.get(storedAs).pages.add(page);
   }
-  // normalize pages count
-  return Array.from(byStored.values()).map(x => ({
+  return Array.from(byStored.values()).map((x) => ({
     filename: x.filename,
     storedAs: x.storedAs,
     href: x.href,
-    pages: x.pages.size || null
+    pages: x.pages.size || null,
   }));
 }
 
@@ -264,7 +314,6 @@ function isSafeStoredName(name) {
   return typeof name === "string" && /^[A-Za-z0-9._-]+$/.test(name);
 }
 
-
 // FAST, reliable: index public PDFs as a single text stream (ensures server starts)
 async function indexPublicPDFs() {
   // rebuild just the public part; keep uploads intact if you want
@@ -273,16 +322,16 @@ async function indexPublicPDFs() {
   }
 
   const files = await fs.readdir(PUBLIC_DIR);
-  const pdfs  = files.filter(f => f.toLowerCase().endsWith(".pdf"));
+  const pdfs = files.filter((f) => f.toLowerCase().endsWith(".pdf"));
 
-     for (const pdfName of pdfs) {
+  for (const pdfName of pdfs) {
     const filePath = path.join(PUBLIC_DIR, pdfName);
 
-    // NEW: register this PDF as a CIP standard version if it matches the pattern
+    // register this PDF as a CIP standard version if it matches the pattern
     const stdInfo = registerStandardFromFilename(pdfName); // { base, versioned } or null
 
     const buf = await fs.readFile(filePath);
-    const parsed = await pdfParse(buf);               // <- simple & stable
+    const parsed = await pdfParse(buf);
     const chunks = chunkText(parsed.text || "");
     if (!chunks.length) continue;
 
@@ -290,16 +339,16 @@ async function indexPublicPDFs() {
     for (let i = 0; i < chunks.length; i += batchSize) {
       const slice = chunks.slice(i, i + batchSize);
 
-      // inject aliases (e.g. "CIP-005 CIP-005-6") into the embedded text
+      // inject aliases into embedded text
       const textsForEmbedding = stdInfo
-        ? slice.map(t => `${stdInfo.base} ${stdInfo.versioned}\n${t}`)
+        ? slice.map((t) => `${stdInfo.base} ${stdInfo.versioned}\n${t}`)
         : slice;
 
-      const vecs  = await embedTextsWithCache(textsForEmbedding);
+      const vecs = await embedTextsWithCache(textsForEmbedding);
 
       for (let j = 0; j < slice.length; j++) {
         corpus.push({
-          chunk: slice[j], // original chunk text for display
+          chunk: slice[j],
           source: `${pdfName} (pseudopages)`,
           href: `/${pdfName}`,
           embedding: vecs[j],
@@ -307,24 +356,25 @@ async function indexPublicPDFs() {
             filename: pdfName,
             origin: "public",
             chunkIndex: i + j,
-            ...(stdInfo ? {
-              standardBase: stdInfo.base,
-              standardVersion: stdInfo.versioned
-            } : {})
-          }
+            ...(stdInfo
+              ? {
+                  standardBase: stdInfo.base,
+                  standardVersion: stdInfo.versioned,
+                }
+              : {}),
+          },
         });
       }
     }
 
-
     console.log(`Indexed ${pdfName}: ${chunks.length} chunks`);
-    await saveEmbedCache(); // periodic save
+    await saveEmbedCache();
   }
 
   console.log(`Total chunks indexed (public): ${corpus.length}`);
 }
 
-// Load cache and initial index (synchronous like your working build)
+// Load cache and initial index
 await loadEmbedCache();
 await indexPublicPDFs();
 
@@ -336,7 +386,7 @@ const storage = multer.diskStorage({
   filename: (_req, file, cb) => {
     const safe = `${Date.now()}-${file.originalname.replace(/[^\w.\-]+/g, "_")}`;
     cb(null, safe);
-  }
+  },
 });
 
 const upload = multer({
@@ -346,11 +396,11 @@ const upload = multer({
     const ext = (file.originalname.split(".").pop() || "").toLowerCase();
     const ok = ["pdf", "txt", "md"].includes(ext);
     if (ok) cb(null, true);
-    else cb(null, false); // ignore unsupported parts silently
-  }
+    else cb(null, false);
+  },
 });
 
-// Page-aware extraction ONLY for uploads (so startup stays fast)
+// Page-aware extraction ONLY for uploads
 async function extractUploadedFilePages(absPath, mimetype, originalname) {
   const buf = await fs.readFile(absPath);
   const ext = (originalname.split(".").pop() || "").toLowerCase();
@@ -358,17 +408,20 @@ async function extractUploadedFilePages(absPath, mimetype, originalname) {
   const isTXT = mimetype.startsWith("text/") || ext === "txt" || ext === "md";
 
   if (isPDF) {
-    // Use pdf-parse pagerender but avoid async/await inside it (more reliable)
     const pages = [];
     await pdfParse(buf, {
       pagerender: (page) =>
         page.getTextContent().then((tc) => {
-          const text = tc.items.map(i => (i.str || "")).join(" ").replace(/\s+/g, " ").trim();
+          const text = tc.items
+            .map((i) => (i.str || ""))
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
           pages.push(text);
-          return ""; // let pdf-parse concatenate internally; we track pages ourselves
-        })
+          return "";
+        }),
     });
-    // Convert to [{page,text}]
+
     const out = [];
     for (let i = 0; i < pages.length; i++) {
       let t = (pages[i] || "").trim();
@@ -378,7 +431,6 @@ async function extractUploadedFilePages(absPath, mimetype, originalname) {
     }
     if (out.length) return out;
 
-    // fallback
     const parsed = await pdfParse(buf);
     return [{ page: 1, text: parsed.text || "" }];
   }
@@ -391,8 +443,12 @@ async function extractUploadedFilePages(absPath, mimetype, originalname) {
   throw new Error("Unsupported file type");
 }
 
-// List corpus by source
-app.get("/api/corpus", (_req, res) => {
+// ===============================
+// Protect most API routes
+// ===============================
+
+// Corpus by source (private)
+app.get("/api/corpus", requireAuth, (_req, res) => {
   const bySource = corpus.reduce((m, c) => {
     m[c.source] = (m[c.source] || 0) + 1;
     return m;
@@ -400,9 +456,10 @@ app.get("/api/corpus", (_req, res) => {
   res.json({ sources: bySource, totalChunks: corpus.length });
 });
 
-// Upload & index (accept common field names: 'files' or 'file'), with page-aware handling
+// Upload & index (private)
 app.post(
   "/api/upload",
+  requireAuth,
   upload.fields([{ name: "files", maxCount: 20 }, { name: "file", maxCount: 20 }]),
   async (req, res) => {
     try {
@@ -410,10 +467,7 @@ app.post(
       console.log("body keys:", Object.keys(req.body || {}));
       console.log("raw files obj keys:", req.files ? Object.keys(req.files) : []);
 
-      const files = [
-        ...(req.files?.files || []),
-        ...(req.files?.file  || [])
-      ];
+      const files = [...(req.files?.files || []), ...(req.files?.file || [])];
 
       if (files.length === 0) {
         return res.status(400).json({ ok: false, error: "No files received" });
@@ -443,8 +497,8 @@ app.post(
                 uploadedAt: new Date().toISOString(),
                 origin: "upload",
                 page,
-                chunkIndex: i
-              }
+                chunkIndex: i,
+              },
             });
           }
         }
@@ -462,8 +516,8 @@ app.post(
   }
 );
 
-// List uploaded files (derived from corpus)
-app.get("/api/uploads", async (_req, res) => {
+// List uploaded files (private)
+app.get("/api/uploads", requireAuth, async (_req, res) => {
   try {
     const items = listUploadedFromCorpus();
     res.json({ ok: true, uploads: items, totalUploads: items.length });
@@ -472,8 +526,8 @@ app.get("/api/uploads", async (_req, res) => {
   }
 });
 
-// Delete an uploaded file by its stored name (as saved on disk)
-app.delete("/api/uploads/:storedAs", async (req, res) => {
+// Delete an uploaded file (private)
+app.delete("/api/uploads/:storedAs", requireAuth, async (req, res) => {
   try {
     const storedAs = req.params.storedAs;
 
@@ -481,29 +535,28 @@ app.delete("/api/uploads/:storedAs", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Invalid file id" });
     }
 
-    // Confirm this file exists in corpus as an *uploaded* doc
     const listed = listUploadedFromCorpus();
-    const found = listed.find(x => x.storedAs === storedAs);
+    const found = listed.find((x) => x.storedAs === storedAs);
     if (!found) {
       return res.status(404).json({ ok: false, error: "Upload not found" });
     }
 
-    // Remove from corpus
     const removedChunks = removeUploadFromCorpus(storedAs);
 
-    // Remove from disk (ignore if already gone)
     const abs = path.join(UPLOAD_DIR, storedAs);
-    try { await fs.unlink(abs); } catch {}
+    try {
+      await fs.unlink(abs);
+    } catch {}
 
-    await saveEmbedCache(); // cache keys remain usable for other texts; just persist state
+    await saveEmbedCache();
     res.json({ ok: true, removedChunks, removedFile: storedAs, totalChunks: corpus.length });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// Optional: rebuild from /public PDFs (keeps uploads intact)
-app.post("/api/reindex", async (_req, res) => {
+// Reindex from /public PDFs (private)
+app.post("/api/reindex", requireAuth, async (_req, res) => {
   try {
     await indexPublicPDFs();
     await saveEmbedCache();
@@ -516,19 +569,28 @@ app.post("/api/reindex", async (_req, res) => {
 // ===============================
 // Hybrid retrieval (cosine + keyword)
 // ===============================
-function normalize(s = "") { return s.toLowerCase().replace(/\s+/g, " ").trim(); }
+function normalize(s = "") {
+  return s.toLowerCase().replace(/\s+/g, " ").trim();
+}
 function keywordScore(query, chunk) {
   const q = normalize(query);
   const c = normalize(chunk);
 
   const keys = [];
   const idMatch = q.match(/cip[-\s]?0?\d{2}(-\d+)?/g);
-  if (idMatch) keys.push(...idMatch.map(x => x.replace(/\s+/g, "")));
-  keys.push("purpose", "objective", "to protect", "confidentiality", "integrity", "communications between control centers");
+  if (idMatch) keys.push(...idMatch.map((x) => x.replace(/\s+/g, "")));
+  keys.push(
+    "purpose",
+    "objective",
+    "to protect",
+    "confidentiality",
+    "integrity",
+    "communications between control centers"
+  );
 
   let score = 0;
   for (const k of keys) if (k && c.includes(k)) score += 1;
-  if (/\bpurpose\s*:/.test(c)) score += 3; // big boost for Purpose header
+  if (/\bpurpose\s*:/.test(c)) score += 3;
   return score;
 }
 
@@ -540,22 +602,17 @@ async function retrieveTopK(query, k = 6) {
   const [qvec] = await embedTexts([q]);
 
   const scored = corpus
-    .filter(c => Array.isArray(c.embedding) && c.embedding.length)
+    .filter((c) => Array.isArray(c.embedding) && c.embedding.length)
     .map((c, idx) => {
       const cosBase = cosineSim(qvec, c.embedding) || 0;
       let kw = keywordScore(q, c.chunk) || 0;
 
-      // boost matches on filename/source when user mentions them 
       const fname = (c.meta?.filename || "").toLowerCase();
       const sourceLabel = (c.source || "").toLowerCase();
 
       let filenameBoost = 0;
-      if (fname && qNorm.includes(fname)) {
-        filenameBoost += 5;
-      }
-      if (sourceLabel && qNorm.includes(sourceLabel)) {
-        filenameBoost += 3;
-      }
+      if (fname && qNorm.includes(fname)) filenameBoost += 5;
+      if (sourceLabel && qNorm.includes(sourceLabel)) filenameBoost += 3;
 
       kw += filenameBoost;
 
@@ -565,8 +622,7 @@ async function retrieveTopK(query, k = 6) {
     .sort((a, b) => b.score - a.score)
     .slice(0, k);
 
-  // CIP exact-id fallback 
-  if (!scored.some(s => s.kw > 0)) {
+  if (!scored.some((s) => s.kw > 0)) {
     const id = (q.match(/cip[-\s]?0?\d{2}(-\d+)?/i) || [])[0];
     if (id) {
       const normId = id.toLowerCase().replace(/\s+/g, "");
@@ -575,42 +631,41 @@ async function retrieveTopK(query, k = 6) {
         const c = normalize(corpus[i].chunk).replace(/\s+/g, "");
         if (c.includes(normId)) exacts.push({ idx: i, score: 1e6 });
       }
-      if (exacts.length) return exacts.slice(0, k).map(e => corpus[e.idx]);
+      if (exacts.length) return exacts.slice(0, k).map((e) => corpus[e.idx]);
     }
   }
 
-  return scored.map(s => corpus[s.idx]);
+  return scored.map((s) => corpus[s.idx]);
 }
 
-
 function buildContextBlock(chunks) {
-  const header =
-`You are an assistant that must answer **only** using the CONTEXT below.
+  const header = `You are an assistant that must answer **only** using the CONTEXT below.
 If the answer is not present in the context, say:
 "I don't know based on the provided documents."
 
 CONTEXT BEGIN
 `;
-  const body = chunks.map((c, i) =>
-`[${i + 1}] Source: ${c.source}
+  const body = chunks
+    .map(
+      (c, i) => `[${i + 1}] Source: ${c.source}
 ${c.chunk}
-`).join("\n---\n");
+`
+    )
+    .join("\n---\n");
   const footer = "\nCONTEXT END\n";
   return header + body + footer;
 }
 
 // ===============================
-// Retrieval + streaming RAG chat
+// Retrieval + streaming RAG chat (private)
 // ===============================
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", requireAuth, async (req, res) => {
   const { model = CHAT_MODEL, messages = [], temperature = 0.3, max_tokens } = req.body;
 
-  const lastUser = [...messages].reverse().find(m => m.role === "user")?.content || "";
+  const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
 
-  // normalize bare standards like "CIP-005" / "CIP 005" into "CIP-005 (CIP-005-6)"
   const normalizedUser = normalizeStandardsInQuery(lastUser);
 
-  // Retrieve relevant chunks using the normalized query
   let retrieved = [];
   try {
     retrieved = await retrieveTopK(normalizedUser, 6);
@@ -621,7 +676,8 @@ app.post("/api/chat", async (req, res) => {
   const contextMsg = { role: "system", content: buildContextBlock(retrieved) };
   const guardrailsMsg = {
     role: "system",
-    content: "If the user's request is outside the supplied CONTEXT, reply: 'I don't know based on the provided documents.'"
+    content:
+      "If the user's request is outside the supplied CONTEXT, reply: 'I don't know based on the provided documents.'",
   };
 
   const toSend = [guardrailsMsg, contextMsg, ...messages];
@@ -635,10 +691,10 @@ app.post("/api/chat", async (req, res) => {
       stream: true,
       options: {
         temperature,
-        ...(Number.isFinite(max_tokens) ? { num_predict: Number(max_tokens) } : {})
+        ...(Number.isFinite(max_tokens) ? { num_predict: Number(max_tokens) } : {}),
       },
-      keep_alive: "1h"
-    })
+      keep_alive: "1h",
+    }),
   });
 
   res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
@@ -655,16 +711,15 @@ app.post("/api/chat", async (req, res) => {
     for await (const chunk of upstream.body) res.write(chunk);
   } catch {
     // ignore midstream disconnects
-    } finally {
-    // Deduplicate sources so each PDF appears only once
+  } finally {
     const seen = new Set();
     const sources = [];
 
     for (const r of retrieved) {
       if (!r) continue;
       const label = (r.source || "").replace(/\s+\(pseudopages\)$/, "");
-      const href  = r.href || null;
-      const key   = `${label}|${href || ""}`;
+      const href = r.href || null;
+      const key = `${label}|${href || ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
       sources.push({ source: label, href });
@@ -673,11 +728,10 @@ app.post("/api/chat", async (req, res) => {
     res.write(JSON.stringify({ done: true, sources }) + "\n");
     res.end();
   }
-
 });
 
 // ============
-// // Start server
+// Start server
 // ============
 app.listen(5173, () => {
   console.log(`UI running on http://localhost:5173`);

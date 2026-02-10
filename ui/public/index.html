@@ -11,17 +11,26 @@
     <header>
       <h1>SRP<br/>AI Agent</h1>
 
-      <!-- Right-side controls: single Upload button + status -->
+      <!-- Right-side controls -->
       <div class="controls">
+        <!-- Auth status -->
+        <div class="authbar">
+          <span id="auth-user" class="auth-user" hidden></span>
+          <button id="logout" type="button" class="auth-logout" hidden>Log out</button>
+        </div>
+
         <!-- Hidden file input -->
         <input id="filepicker" type="file" accept=".pdf,.txt,.md" multiple class="visually-hidden" />
+
         <!-- Visible button that matches Send styling -->
         <button id="upload" type="button">Upload Files</button>
         <div id="upload-status" class="status" aria-live="polite"></div>
+
         <details id="mgr" class="mgr">
           <summary>Manage Files</summary>
           <ul id="uploads-list" class="uploads"></ul>
         </details>
+
         <label class="toggle" title="Toggle dark mode">
           <input type="checkbox" id="theme-toggle" aria-label="Toggle dark mode" />
           <span class="slider"></span>
@@ -52,6 +61,32 @@
       <textarea id="prompt" rows="2" placeholder="Ask about CIP requirements…"></textarea>
       <button id="send" type="button">Send</button>
     </footer>
+  </div>
+
+  <!-- Login overlay (shown when not logged in) -->
+  <div id="login-overlay" class="login-overlay" hidden>
+    <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="login-title">
+      <h2 id="login-title">Sign in</h2>
+
+      <div id="login-notice" class="login-notice" aria-live="polite"></div>
+
+      <label class="login-label" for="login-username">Username</label>
+      <input id="login-username" class="login-input" type="text" autocomplete="username" />
+
+      <label class="login-label" for="login-password">Password</label>
+      <input id="login-password" class="login-input" type="password" autocomplete="current-password" />
+
+      <label class="login-label" for="login-2fa">Second factor (not required yet)</label>
+      <input id="login-2fa" class="login-input" type="password" autocomplete="one-time-code"
+             placeholder="Leave blank for now" />
+
+      <div class="login-row">
+        <button id="login-submit" type="button" class="login-btn">Log in</button>
+      </div>
+
+      <div id="login-error" class="login-error" aria-live="polite"></div>
+      <div class="login-footnote">Second factor is shown as a placeholder only.</div>
+    </div>
   </div>
 
   <script src="app.js" type="module"></script>

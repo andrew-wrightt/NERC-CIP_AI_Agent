@@ -301,3 +301,123 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
 .toggle input:checked + .slider { background: var(--accent); border-color: var(--accent); }
 .toggle input:checked + .slider::after { transform: translateX(18px); }
 .toggle .toggle-text { font-size: 12px; color: var(--muted); }
+
+/* ===== 
+Auth UI (login overlay + auth bar) 
+===== */
+.authbar{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  justify-content:flex-end;
+  margin-bottom:8px;
+}
+
+.auth-user{
+  font-size: 0.9rem;
+  opacity: 0.9;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border, #2a2f3a);
+  background: rgba(255,255,255,0.06);
+}
+
+.auth-logout{
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--btn-border, #444);
+  background: var(--btn-bg, #fff);
+  color: var(--btn-text, #111);
+  cursor: pointer;
+}
+
+.login-overlay{
+  position: fixed;
+  inset: 0;
+  display:none !important;
+  justify-content:center;
+  align-items:center;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(2px);
+  z-index: 9999;
+}
+
+.login-card{
+  width: 420px;
+  max-width: 92vw;
+  border-radius: 16px;
+  border: 1px solid var(--panel-border, rgba(255,255,255,0.12));
+  background: var(--panel, rgba(20,20,24,0.95));
+  color: var(--text, #e5e7eb);
+  padding: 18px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+}
+
+.login-card h2{
+  margin: 0 0 10px 0;
+}
+
+.login-label{
+  display:block;
+  margin-top: 10px;
+  margin-bottom: 6px;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.login-input{
+  width:100%;
+  box-sizing:border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border, rgba(255,255,255,0.12));
+  background: rgba(0,0,0,0.25);
+  color: inherit;
+  outline: none;
+}
+
+.login-input:focus{
+  border-color: rgba(99,102,241,0.8);
+}
+
+.login-row{
+  margin-top: 14px;
+  display:flex;
+  justify-content:flex-end;
+}
+
+.login-btn{
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--btn-border, rgba(255,255,255,0.15));
+  background: rgba(99,102,241,0.9);
+  color: white;
+  cursor:pointer;
+  font-weight: 600;
+}
+
+.login-notice{
+  font-size: 0.9rem;
+  opacity: 0.9;
+  min-height: 18px;
+}
+
+.login-error{
+  margin-top: 10px;
+  color: #fca5a5;
+  min-height: 18px;
+  font-size: 0.9rem;
+}
+
+.login-footnote{
+  margin-top: 10px;
+  font-size: 0.78rem;
+  opacity: 0.65;
+}
+
+/* Optional: visually disable app while login overlay is active */
+body.auth-locked .app{
+  filter: blur(1px);
+  pointer-events: none;
+  user-select: none;
+}

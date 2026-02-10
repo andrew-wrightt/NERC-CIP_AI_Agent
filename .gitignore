@@ -9,8 +9,10 @@ ui/uploads/
 ui/.rag-embed-cache.json
 ui/cache/rag-embed-cache.json
 ui/cache/rag-embed-cache.json.tmp
-
+ui/data/
 ui/cache/
+*.sqlite
+.env
 
 # OS junk
 .DS_Store
