@@ -2,56 +2,115 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>SRP AI Agent</title>
+  <title>NERC-CIP AI Agent</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="app">
-    <header>
-      <h1>SRP<br/>AI Agent</h1>
-
-      <!-- Right-side controls: single Upload button + status -->
-      <div class="controls">
-        <!-- Hidden file input -->
-        <input id="filepicker" type="file" accept=".pdf,.txt,.md" multiple class="visually-hidden" />
-        <!-- Visible button that matches Send styling -->
-        <button id="upload" type="button">Upload Files</button>
-        <div id="upload-status" class="status" aria-live="polite"></div>
-        <details id="mgr" class="mgr">
-          <summary>Manage Files</summary>
-          <ul id="uploads-list" class="uploads"></ul>
-        </details>
-        <label class="toggle" title="Toggle dark mode">
-          <input type="checkbox" id="theme-toggle" aria-label="Toggle dark mode" />
-          <span class="slider"></span>
-          <span class="toggle-text">Dark</span>
-        </label>
-      </div>
-    </header>
-
-    <main id="chat" aria-live="polite" aria-busy="false"></main>
-
-    <!-- message template -->
-    <template id="msg-tpl">
-      <article class="msg">
-        <div class="avatar"></div>
-        <div class="bubble">
-          <div class="content"></div>
-          <details class="cites" hidden>
-            <summary>Sources</summary>
-            <ul class="sources"></ul>
-          </details>
+    <!-- ========== AUTH SCREEN (shown when not logged in) ========== -->
+    <div id="auth-screen" class="auth-screen">
+      <div class="auth-container">
+        <div class="auth-header">
+          <h1>NERC-CIP AI Agent</h1>
+          <p>Secure access to NERC-CIP compliance assistance</p>
         </div>
-      </article>
-    </template>
 
-    <div id="status" class="status" aria-live="polite"></div>
+        <!-- Login Form -->
+        <form id="login-form" class="auth-form">
+          <h2>Sign In</h2>
+          <div class="form-group">
+            <label for="login-username">Username</label>
+            <input type="text" id="login-username" name="username" required autocomplete="username" />
+          </div>
+          <div class="form-group">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" name="password" required autocomplete="current-password" />
+          </div>
+          <div id="login-error" class="error-msg" hidden></div>
+          <button type="submit" class="btn-primary">Sign In</button>
+          <p class="auth-switch">Don't have an account? <a href="#" id="show-register">Register here</a></p>
+        </form>
 
-    <footer>
-      <textarea id="prompt" rows="2" placeholder="Ask about CIP requirements…"></textarea>
-      <button id="send" type="button">Send</button>
-    </footer>
+        <!-- Register Form -->
+        <form id="register-form" class="auth-form" hidden>
+          <h2>Create Account</h2>
+          <div class="form-group">
+            <label for="register-username">Username</label>
+            <input type="text" id="register-username" name="username" required minlength="3" maxlength="50" autocomplete="username" />
+          </div>
+          <div class="form-group">
+            <label for="register-password">Password</label>
+            <input type="password" id="register-password" name="password" required minlength="8" autocomplete="new-password" />
+            <small>Min 8 characters, needs uppercase, lowercase, and number</small>
+          </div>
+          <div class="form-group">
+            <label for="register-confirm">Confirm Password</label>
+            <input type="password" id="register-confirm" name="confirm" required autocomplete="new-password" />
+          </div>
+          <div id="register-error" class="error-msg" hidden></div>
+          <div id="register-success" class="success-msg" hidden></div>
+          <button type="submit" class="btn-primary">Create Account</button>
+          <p class="auth-switch">Already have an account? <a href="#" id="show-login">Sign in here</a></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- ========== MAIN APP (shown when logged in) ========== -->
+    <div id="main-app" class="main-app" hidden>
+      <header>
+        <h1>NERC-CIP<br/>AI Agent</h1>
+
+        <!-- Right-side controls -->
+        <div class="controls">
+          <!-- User info -->
+          <span id="user-display" class="user-display"></span>
+          
+          <!-- Admin-only controls (hidden for operators) -->
+          <div id="admin-controls" class="admin-controls" hidden>
+            <a href="/admin/" class="admin-link" title="Admin Panel">⚙️ Admin</a>
+            <input id="filepicker" type="file" accept=".pdf,.txt,.md" multiple class="visually-hidden" />
+            <button id="upload" type="button">Upload Files</button>
+            <div id="upload-status" class="status" aria-live="polite"></div>
+            <details id="mgr" class="mgr">
+              <summary>Manage Files</summary>
+              <ul id="uploads-list" class="uploads"></ul>
+            </details>
+          </div>
+          
+          <label class="toggle" title="Toggle dark mode">
+            <input type="checkbox" id="theme-toggle" aria-label="Toggle dark mode" />
+            <span class="slider"></span>
+            <span class="toggle-text">Dark</span>
+          </label>
+          
+          <button id="logout-btn" class="btn-logout">Logout</button>
+        </div>
+      </header>
+
+      <main id="chat" aria-live="polite" aria-busy="false"></main>
+
+      <!-- message template -->
+      <template id="msg-tpl">
+        <article class="msg">
+          <div class="avatar"></div>
+          <div class="bubble">
+            <div class="content"></div>
+            <details class="cites" hidden>
+              <summary>Sources</summary>
+              <ul class="sources"></ul>
+            </details>
+          </div>
+        </article>
+      </template>
+
+      <div id="status" class="status" aria-live="polite"></div>
+
+      <footer>
+        <textarea id="prompt" rows="2" placeholder="Ask about CIP requirements…"></textarea>
+        <button id="send" type="button">Send</button>
+      </footer>
+    </div>
   </div>
 
   <script src="app.js" type="module"></script>
