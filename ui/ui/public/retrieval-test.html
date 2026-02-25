@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Retrieval Tuning Test Page</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #1a1a2e;
+      color: #eee;
+    }
+    h1 { color: #0ea5e9; margin-bottom: 5px; }
+    .subtitle { color: #888; margin-bottom: 30px; }
+    
+    .section {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .section h2 {
+      margin-top: 0;
+      color: #0ea5e9;
+      font-size: 18px;
+      border-bottom: 1px solid #333;
+      padding-bottom: 10px;
+    }
+    
+    /* Config display */
+    .config-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px;
+    }
+    .config-item {
+      background: #1a1a2e;
+      padding: 12px;
+      border-radius: 8px;
+    }
+    .config-item label {
+      display: block;
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    .config-item .value {
+      font-size: 20px;
+      font-weight: bold;
+      color: #10b981;
+    }
+    
+    /* Query input */
+    .query-form {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .query-form input {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 16px;
+      border: 2px solid #333;
+      border-radius: 8px;
+      background: #1a1a2e;
+      color: #eee;
+    }
+    .query-form input:focus {
+      outline: none;
+      border-color: #0ea5e9;
+    }
+    .query-form button {
+      padding: 12px 24px;
+      font-size: 16px;
+      background: #0ea5e9;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .query-form button:hover {
+      background: #0284c7;
+    }
+    .query-form button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    
+    /* Example queries */
+    .examples {
+      margin-bottom: 20px;
+    }
+    .examples p {
+      margin: 0 0 10px;
+      color: #888;
+      font-size: 14px;
+    }
+    .example-btn {
+      background: #1a1a2e;
+      border: 1px solid #333;
+      color: #eee;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin: 0 5px 5px 0;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .example-btn:hover {
+      border-color: #0ea5e9;
+      color: #0ea5e9;
+    }
+    
+    /* Results */
+    .results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+    .results-count {
+      background: #10b981;
+      color: white;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 14px;
+    }
+    .no-results {
+      color: #f59e0b;
+    }
+    
+    .result-card {
+      background: #1a1a2e;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 10px;
+      border-left: 4px solid #0ea5e9;
+    }
+    .result-card .rank {
+      display: inline-block;
+      background: #0ea5e9;
+      color: white;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      text-align: center;
+      line-height: 28px;
+      font-weight: bold;
+      margin-right: 10px;
+    }
+    .result-card .source {
+      font-weight: bold;
+      color: #10b981;
+    }
+    .result-card .section-tag {
+      display: inline-block;
+      background: #7c3aed;
+      color: white;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      margin-left: 10px;
+    }
+    .result-card .cip-tag {
+      display: inline-block;
+      background: #0ea5e9;
+      color: white;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      margin-left: 5px;
+    }
+    .result-card .preview {
+      margin-top: 10px;
+      padding: 10px;
+      background: #16213e;
+      border-radius: 6px;
+      font-size: 13px;
+      color: #aaa;
+      line-height: 1.5;
+    }
+    
+    /* How it works */
+    .how-it-works {
+      background: #1e3a5f;
+      border-radius: 8px;
+      padding: 15px;
+    }
+    .how-it-works h3 {
+      margin-top: 0;
+      color: #0ea5e9;
+    }
+    .how-it-works ul {
+      margin: 0;
+      padding-left: 20px;
+      color: #aaa;
+    }
+    .how-it-works li {
+      margin-bottom: 8px;
+    }
+    .how-it-works code {
+      background: #1a1a2e;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #10b981;
+    }
+    
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #888;
+    }
+    .error {
+      background: #7f1d1d;
+      color: #fca5a5;
+      padding: 15px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Retrieval Tuning Test Page</h1>
+  <p class="subtitle">Test how the system finds relevant document chunks for your queries</p>
+
+  <!-- Current Config -->
+  <div class="section">
+    <h2>Current Retrieval Configuration</h2>
+    <div id="config-display" class="config-grid">
+      <div class="loading">Loading configuration...</div>
+    </div>
+  </div>
+
+  <!-- Query Testing -->
+  <div class="section">
+    <h2>Test a Query</h2>
+    
+    <form class="query-form" onsubmit="testQuery(event)">
+      <input type="text" id="query-input" placeholder="Type a question about NERC-CIP..." />
+      <button type="submit" id="test-btn">Test Retrieval</button>
+    </form>
+    
+    <div id="results-container"></div>
+  </div>
+
+  <!-- How it Works -->
+  <div class="section">
+    <h2>How Retrieval Works</h2>
+    <div class="how-it-works">
+      <h3>Hybrid Search</h3>
+      <p>Combines two search methods for better accuracy:</p>
+      <ul>
+        <li><strong>Vector Search</strong> - Understands meaning and context (60%)</li>
+        <li><strong>BM25 Search</strong> - Matches exact words and phrases (40%)</li>
+      </ul>
+      <p>Results are combined using Reciprocal Rank Fusion (RRF).</p>
+      
+      <h3>Chunking</h3>
+      <ul>
+        <li>Documents split into ~1500 character chunks</li>
+        <li>500 character overlap to preserve context</li>
+        <li>Breaks at paragraph/sentence boundaries when possible</li>
+      </ul>
+      
+      <h3>Configuration</h3>
+      <p>Edit <code>RETRIEVAL_CONFIG</code> in <code>server.js</code> to adjust settings.</p>
+    </div>
+  </div>
+
+  <script>
+    // Load config on page load
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/retrieval/config');
+        const data = await res.json();
+        
+        if (data.ok && data.config) {
+          const container = document.getElementById('config-display');
+          container.innerHTML = Object.entries(data.config).map(([key, value]) => `
+            <div class="config-item">
+              <label>${key}</label>
+              <div class="value">${value}</div>
+            </div>
+          `).join('');
+        }
+      } catch (err) {
+        document.getElementById('config-display').innerHTML = `
+          <div class="error">Failed to load config: ${err.message}</div>
+        `;
+      }
+    }
+    
+    // Set query from example button
+    function setQuery(query) {
+      document.getElementById('query-input').value = query;
+    }
+    
+    // Test retrieval
+    async function testQuery(event) {
+      event.preventDefault();
+      
+      const query = document.getElementById('query-input').value.trim();
+      if (!query) return;
+      
+      const btn = document.getElementById('test-btn');
+      const container = document.getElementById('results-container');
+      
+      btn.disabled = true;
+      btn.textContent = 'Testing...';
+      container.innerHTML = '<div class="loading">Searching documents...</div>';
+      
+      try {
+        const res = await fetch('/api/retrieval/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+        
+        const data = await res.json();
+        
+        if (data.ok) {
+          const count = data.sources?.length || 0;
+          
+          let html = `
+            <div class="results-header">
+              <span>Results for: <strong>"${data.query}"</strong></span>
+              <span class="results-count ${count === 0 ? 'no-results' : ''}">${count} chunks found</span>
+            </div>
+          `;
+          
+          if (data.normalizedQuery !== data.query) {
+            html += `<p style="color: #888; font-size: 13px;">Normalized to: "${data.normalizedQuery}"</p>`;
+          }
+          
+          if (count === 0) {
+            html += `<div class="error">No results found.</div>`;
+          } else {
+            html += data.sources.map(s => `
+              <div class="result-card">
+                <span class="rank">${s.rank}</span>
+                <span class="source">${s.source}</span>
+                <div class="preview">${s.chunkPreview}</div>
+              </div>
+            `).join('');
+          }
+          
+          container.innerHTML = html;
+        } else {
+          container.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+        }
+      } catch (err) {
+        container.innerHTML = `<div class="error">Request failed: ${err.message}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Test Retrieval';
+      }
+    }
+    
+    // Initialize
+    loadConfig();
+  </script>
+</body>
+</html>
