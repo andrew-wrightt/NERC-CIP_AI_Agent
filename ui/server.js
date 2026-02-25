@@ -6,15 +6,16 @@ import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import fsSync from "fs";
 import pdfParse from "pdf-parse";
-import { createHash } from "crypto";
 import multer from "multer";
 
 // Admin / Auth
-import adminRoutes from "./adminRoutes.js";
 import session from "express-session";
 import SQLiteStoreFactory from "connect-sqlite3";
 import { authRouter } from "./auth/auth.routes.js";
-import { requireAuth } from "./auth/auth.middleware.js";
+import adminRoutes, { authenticateToken, requirePermission } from "./adminRoutes.js";
+
+// RAG DB (documents/standards/chunks/embeddings)
+import { openRagDb } from "./ragdb.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,38 +72,58 @@ const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const CHAT_MODEL = "mistral:instruct";
 const EMBED_MODEL = "nomic-embed-text";
 
-// === CACHE: persistent cache for embeddings of indexed documents ===
-const CACHE_DIR = path.join(__dirname, "cache");
-await fs.mkdir(CACHE_DIR, { recursive: true });
-const CACHE_PATH = path.join(CACHE_DIR, "rag-embed-cache.json");
-let embedCache = Object.create(null);
+// ===============================
+// Open RAG SQLite
+// ===============================
+const rag = openRagDb();
+console.log(`[ragdb] Using ${rag.DB_PATH}`);
 
-function hashText(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
+// Server-local prepared statements for things ragdb.js doesn’t expose directly
+const stmt = {
+  // list uploads = docs with origin upload
+  listUploadDocs: rag.db.prepare(
+    `SELECT id, filename, stored_as FROM documents WHERE origin='upload' ORDER BY updated_at DESC`
+  ),
+  // count distinct pages in chunks for a doc (uploads)
+  countPagesForDoc: rag.db.prepare(
+    `SELECT COUNT(DISTINCT page) AS n FROM chunks WHERE doc_id=? AND page IS NOT NULL`
+  ),
+  // find upload doc by stored name
+  getUploadDocByStored: rag.db.prepare(
+    `SELECT * FROM documents WHERE origin='upload' AND stored_as=? LIMIT 1`
+  ),
+  // delete a doc (cascades chunks)
+  deleteDocById: rag.db.prepare(`DELETE FROM documents WHERE id=?`),
 
-async function loadEmbedCache() {
-  try {
-    const data = await fs.readFile(CACHE_PATH, "utf8");
-    const parsed = JSON.parse(data);
-    if (parsed && typeof parsed === "object") embedCache = parsed;
-    console.log(
-      `[cache] Loaded ${Object.keys(embedCache).length} vectors from ${path.basename(CACHE_PATH)}`
-    );
-  } catch {
-    console.log("[cache] No existing cache, starting fresh");
-  }
-}
+  // corpus stats by source_label
+  corpusBySource: rag.db.prepare(`
+    SELECT source_label AS source, COUNT(*) AS n
+    FROM chunks
+    GROUP BY source_label
+    ORDER BY n DESC
+  `),
 
-async function saveEmbedCache() {
-  try {
-    const tmp = CACHE_PATH + ".tmp";
-    await fs.writeFile(tmp, JSON.stringify(embedCache), "utf8");
-    await fs.rename(tmp, CACHE_PATH);
-    console.log(`[cache] Saved ${Object.keys(embedCache).length} vectors`);
-  } catch (e) {
-    console.warn("[cache] Save failed:", e.message);
-  }
+  // chunk candidates (broad) - adjust LIMIT if you grow large
+  fetchChunkCandidates: rag.db.prepare(`
+    SELECT c.text, c.text_hash, c.source_label, c.href
+    FROM chunks c
+    LIMIT ?
+  `),
+
+  // chunk candidates filtered by standard base if user asks CIP-###
+  fetchChunksForStandardBase: rag.db.prepare(`
+    SELECT c.text, c.text_hash, c.source_label, c.href
+    FROM chunks c
+    JOIN documents d ON d.id = c.doc_id
+    WHERE d.standard_base = ?
+    LIMIT ?
+  `),
+
+};
+
+// Bulk embedding lookup (uses ragdb helper)
+function getEmbeddingsBulk(model, hashes) {
+  return rag.getEmbeddingsBulk(model, hashes);
 }
 
 // ============================
@@ -175,37 +196,34 @@ async function embedTextSingle(text) {
   return vec;
 }
 
-async function embedTexts(texts) {
-  return Promise.all(texts.map((t) => embedTextSingle(t)));
-}
-
-// Cache-aware embedding for corpus texts
-async function embedTextsWithCache(texts) {
+// Cache-aware embedding for texts using SQLite embeddings table
+async function embedTextsWithDbCache(texts) {
   const results = new Array(texts.length);
   const misses = [];
   const missIdx = [];
+  const missHashes = [];
 
   for (let i = 0; i < texts.length; i++) {
     const t = texts[i] || "";
-    const key = hashText(t);
-    const cached = embedCache[key];
+    const h = rag.sha256Text(t);
+    const cached = rag.getEmbeddingVector(h, EMBED_MODEL);
     if (Array.isArray(cached)) {
       results[i] = cached;
     } else {
       misses.push(t);
       missIdx.push(i);
+      missHashes.push(h);
     }
   }
 
   if (misses.length) {
-    const newVecs = await embedTexts(misses);
+    const newVecs = await Promise.all(misses.map((t) => embedTextSingle(t)));
     for (let k = 0; k < missIdx.length; k++) {
       const i = missIdx[k];
-      const t = texts[i] || "";
-      const key = hashText(t);
+      const h = missHashes[k];
       const vec = newVecs[k];
       results[i] = vec;
-      embedCache[key] = vec; // persist in-memory
+      rag.putEmbeddingVector(h, EMBED_MODEL, vec);
     }
   }
 
@@ -213,170 +231,92 @@ async function embedTextsWithCache(texts) {
 }
 
 // ===================
-// Corpus management
+// Index public PDFs into SQLite
 // ===================
-/**
- * corpus entries:
- * { chunk, source, href, embedding, meta?: { origin, filename, storedAs?, page?, chunkIndex? } }
- */
-const corpus = [];
-
-// Map like: { "CIP-005": { versions: ["CIP-005-3","CIP-005-6"], latest:"CIP-005-6", latestVersion:6 } }
-const standardMap = Object.create(null);
-
-/**
- * Parse a CIP filename like "CIP-005-6.pdf" and register it.
- * Returns { base, versioned } or null.
- */
-function registerStandardFromFilename(pdfName) {
-  // Accept things like CIP-5-3.pdf, CIP005-6.pdf, CIP 005-6.pdf, etc.
-  const m = pdfName.match(/CIP[-\s]?(\d{1,3})[-\s]?(\d+)/i);
-  if (!m) return null;
-
-  const numRaw = m[1];
-  const verRaw = m[2];
-  const num = String(numRaw).padStart(3, "0"); // 5   -> "005"
-  const versionNum = parseInt(verRaw, 10);
-
-  const base = `CIP-${num}`; // e.g. CIP-005
-  const versioned = `${base}-${versionNum}`; // e.g. CIP-005-6
-
-  const existing = standardMap[base];
-  if (!existing) {
-    standardMap[base] = {
-      versions: [versioned],
-      latest: versioned,
-      latestVersion: versionNum,
-    };
-  } else {
-    if (!existing.versions.includes(versioned)) existing.versions.push(versioned);
-    if (versionNum > existing.latestVersion) {
-      existing.latest = versioned;
-      existing.latestVersion = versionNum;
-    }
-  }
-
-  return { base, versioned };
-}
-
-/**
- * Normalize user queries like "CIP-005" / "CIP 5" / "CIP005"
- * into: "CIP-005 (CIP-005-6)" so retrieval sees the versioned ID.
- */
-function normalizeStandardsInQuery(question = "") {
-  return question.replace(/\bCIP[-\s]?(\d{1,3})(?![-\s]?\d)\b/gi, (match, numRaw) => {
-    const num = String(numRaw).padStart(3, "0"); // "5" -> "005"
-    const base = `CIP-${num}`;
-    const info = standardMap[base];
-    if (!info || !info.latest) return match;
-    // Preserve what the user wrote, but append the latest version so embeddings see it
-    return `${match} (${info.latest})`;
-  });
-}
-
-// Build an index of uploaded files from the in-memory corpus
-function listUploadedFromCorpus() {
-  const byStored = new Map(); // storedAs -> { filename, storedAs, pages:Set, href }
-  for (const c of corpus) {
-    if (c?.meta?.origin !== "upload") continue;
-    const { filename, storedAs, page } = c.meta || {};
-    if (!storedAs || !filename) continue;
-    if (!byStored.has(storedAs)) {
-      byStored.set(storedAs, {
-        filename,
-        storedAs,
-        href: `/uploads/${storedAs}`,
-        pages: new Set(),
-      });
-    }
-    if (Number.isFinite(page)) byStored.get(storedAs).pages.add(page);
-  }
-  return Array.from(byStored.values()).map((x) => ({
-    filename: x.filename,
-    storedAs: x.storedAs,
-    href: x.href,
-    pages: x.pages.size || null,
-  }));
-}
-
-// Remove all corpus chunks belonging to a stored upload
-function removeUploadFromCorpus(storedAs) {
-  let removed = 0;
-  for (let i = corpus.length - 1; i >= 0; i--) {
-    const m = corpus[i]?.meta;
-    if (m?.origin === "upload" && m?.storedAs === storedAs) {
-      corpus.splice(i, 1);
-      removed++;
-    }
-  }
-  return removed;
-}
-
-// Very defensive filename guard (no path traversal)
-function isSafeStoredName(name) {
-  return typeof name === "string" && /^[A-Za-z0-9._-]+$/.test(name);
-}
-
-// FAST, reliable: index public PDFs as a single text stream (ensures server starts)
-async function indexPublicPDFs() {
-  // rebuild just the public part; keep uploads intact
-  for (let i = corpus.length - 1; i >= 0; i--) {
-    if (corpus[i]?.meta?.origin === "public") corpus.splice(i, 1);
-  }
-
+async function indexPublicPDFs({ force = false } = {}) {
   const files = await fs.readdir(PUBLIC_DIR);
   const pdfs = files.filter((f) => f.toLowerCase().endsWith(".pdf"));
 
+  let indexedDocs = 0;
+
   for (const pdfName of pdfs) {
     const filePath = path.join(PUBLIC_DIR, pdfName);
-
-    // register this PDF as a CIP standard version if it matches the pattern
-    const stdInfo = registerStandardFromFilename(pdfName);
-
     const buf = await fs.readFile(filePath);
+
+    // Upsert document row and standards mapping (based on filename)
+    // Public docs don't need stored_as; we key them by filename.
+    const doc = rag.upsertDocumentFromFile({
+      origin: "public",
+      stored_as: null,
+      filename: pdfName,
+      bytes: buf,
+      mime_type: "application/pdf",
+    });
+
+    // If not forcing, skip reindex if sha unchanged and chunks exist
+    if (!force) {
+      const existingChunks = rag.countChunksForDoc(doc.id);
+      if (existingChunks > 0) {
+        // already indexed (and sha upserted). Good enough.
+        continue;
+      }
+    }
+
     const parsed = await pdfParse(buf);
     const chunks = chunkText(parsed.text || "");
     if (!chunks.length) continue;
 
+    // Prepare chunk rows
     const batchSize = 32;
+    const allChunkRows = [];
+
     for (let i = 0; i < chunks.length; i += batchSize) {
       const slice = chunks.slice(i, i + batchSize);
 
-      // inject aliases (e.g. "CIP-005 CIP-005-6") into the embedded text
-      const textsForEmbedding = stdInfo
-        ? slice.map((t) => `${stdInfo.base} ${stdInfo.versioned}\n${t}`)
-        : slice;
+      // For CIP docs, help embeddings see both base and version
+      const textsForEmbedding =
+        doc?.standard_base && doc?.versioned_id
+          ? slice.map((t) => `${doc.standard_base} ${doc.versioned_id}\n${t}`)
+          : slice;
 
-      const vecs = await embedTextsWithCache(textsForEmbedding);
+      const vecs = await embedTextsWithDbCache(textsForEmbedding);
 
       for (let j = 0; j < slice.length; j++) {
-        corpus.push({
-          chunk: slice[j],
-          source: `${pdfName} (pseudopages)`,
+        const text = slice[j];
+        const text_hash = rag.sha256Text(
+          (doc?.standard_base && doc?.versioned_id)
+            ? `${doc.standard_base} ${doc.versioned_id}\n${text}`
+            : text
+        );
+
+        // Ensure embedding exists (vecs already generated, but store under same hash)
+        if (!rag.getEmbeddingVector(text_hash, EMBED_MODEL)) {
+          rag.putEmbeddingVector(text_hash, EMBED_MODEL, vecs[j]);
+        }
+
+        allChunkRows.push({
+          doc_id: doc.id,
+          page: null, // public pseudopages
+          chunk_index: i + j,
+          text,
+          text_hash,
+          source_label: `${pdfName} (pseudopages)`,
           href: `/${pdfName}`,
-          embedding: vecs[j],
-          meta: {
-            filename: pdfName,
-            origin: "public",
-            chunkIndex: i + j,
-            ...(stdInfo
-              ? { standardBase: stdInfo.base, standardVersion: stdInfo.versioned }
-              : {}),
-          },
         });
       }
     }
 
-    console.log(`Indexed ${pdfName}: ${chunks.length} chunks`);
-    await saveEmbedCache();
+    rag.replaceDocumentChunks(doc.id, allChunkRows);
+
+    indexedDocs++;
+    console.log(`[index] Public ${pdfName}: ${allChunkRows.length} chunks`);
   }
 
-  console.log(`Total chunks indexed (public): ${corpus.length}`);
+  console.log(`[index] Public indexing done. Docs indexed this run: ${indexedDocs}`);
 }
 
-// Load cache and initial index
-await loadEmbedCache();
-await indexPublicPDFs();
+// Initial index pass (only missing docs)
+await indexPublicPDFs({ force: false });
 
 // ==============
 // Multer upload
@@ -444,71 +384,96 @@ async function extractUploadedFilePages(absPath, mimetype, originalname) {
 }
 
 // ===============================
-// Protect most API routes (session-based)
+// API routes (JWT-protected where appropriate)
 // ===============================
 
-// Corpus by source (private)
-app.get("/api/corpus", requireAuth, (_req, res) => {
-  const bySource = corpus.reduce((m, c) => {
-    m[c.source] = (m[c.source] || 0) + 1;
-    return m;
-  }, {});
-  res.json({ sources: bySource, totalChunks: corpus.length });
+// Corpus stats (private)
+app.get("/api/corpus", authenticateToken, async (_req, res) => {
+  try {
+    const rows = stmt.corpusBySource.all();
+    const bySource = {};
+    let total = 0;
+    for (const r of rows) {
+      bySource[r.source] = r.n;
+      total += r.n;
+    }
+    res.json({ sources: bySource, totalChunks: total });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-// Upload & index (private)
+// Upload & index (admins only)
 app.post(
   "/api/upload",
-  requireAuth,
+  authenticateToken,
+  requirePermission("docs:write"),
   upload.fields([{ name: "files", maxCount: 20 }, { name: "file", maxCount: 20 }]),
   async (req, res) => {
     try {
-      console.log("headers:", req.headers["content-type"]);
-      console.log("body keys:", Object.keys(req.body || {}));
-      console.log("raw files obj keys:", req.files ? Object.keys(req.files) : []);
-
       const files = [...(req.files?.files || []), ...(req.files?.file || [])];
-
       if (files.length === 0) {
         return res.status(400).json({ ok: false, error: "No files received" });
       }
 
       const results = [];
       for (const f of files) {
+        // Read file bytes (for hashing + doc registry)
+        const abs = path.join(UPLOAD_DIR, f.filename);
+        const bytes = await fs.readFile(abs);
+
+        // Upsert document row
+        const doc = rag.upsertDocumentFromFile({
+          origin: "upload",
+          stored_as: f.filename,
+          filename: f.originalname,
+          bytes,
+          mime_type: f.mimetype || "application/octet-stream",
+        });
+
         const pages = await extractUploadedFilePages(
           f.path,
           f.mimetype || "application/octet-stream",
           f.originalname
         );
 
+        const allChunkRows = [];
+
         for (const { page, text } of pages) {
           const chunks = chunkText(text, 1000, 300).filter(Boolean);
-          const vecs = await embedTextsWithCache(chunks);
+          if (!chunks.length) continue;
+
+          const vecs = await embedTextsWithDbCache(chunks);
 
           for (let i = 0; i < chunks.length; i++) {
-            corpus.push({
-              chunk: chunks[i],
-              source: `${f.originalname} p.${page}`,
+            const chunk = chunks[i];
+            const text_hash = rag.sha256Text(chunk);
+
+            // ensure embedding stored
+            if (!rag.getEmbeddingVector(text_hash, EMBED_MODEL)) {
+              rag.putEmbeddingVector(text_hash, EMBED_MODEL, vecs[i]);
+            }
+
+            allChunkRows.push({
+              doc_id: doc.id,
+              page,
+              chunk_index: i,
+              text: chunk,
+              text_hash,
+              source_label: `${f.originalname} p.${page}`,
               href: `/uploads/${f.filename}#page=${page}`,
-              embedding: vecs[i],
-              meta: {
-                filename: f.originalname,
-                storedAs: f.filename,
-                uploadedAt: new Date().toISOString(),
-                origin: "upload",
-                page,
-                chunkIndex: i,
-              },
             });
           }
         }
 
-        results.push({ file: f.originalname });
-        console.log(`Uploaded & indexed ${f.originalname}`);
+        // Replace chunks for this doc
+        rag.replaceDocumentChunks(doc.id, allChunkRows);
+
+        results.push({ file: f.originalname, chunks: allChunkRows.length });
+        console.log(`[upload] Indexed ${f.originalname}: ${allChunkRows.length} chunks`);
       }
 
-      await saveEmbedCache();
-      res.json({ ok: true, indexed: results, totalChunks: corpus.length });
+      res.json({ ok: true, indexed: results });
     } catch (e) {
       console.error("upload handler error:", e);
       res.status(500).json({ ok: false, error: e.message });
@@ -517,50 +482,63 @@ app.post(
 );
 
 // List uploaded files (private)
-app.get("/api/uploads", requireAuth, async (_req, res) => {
+app.get("/api/uploads", authenticateToken, requirePermission("docs:read"), async (_req, res) => {
   try {
-    const items = listUploadedFromCorpus();
-    res.json({ ok: true, uploads: items, totalUploads: items.length });
+    const docs = stmt.listUploadDocs.all();
+    const uploads = docs.map((d) => {
+      const pages = stmt.countPagesForDoc.get(d.id)?.n ?? null;
+      return {
+        filename: d.filename,
+        storedAs: d.stored_as,
+        href: `/uploads/${d.stored_as}`,
+        pages: pages || null,
+      };
+    });
+    res.json({ ok: true, uploads, totalUploads: uploads.length });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// Delete an uploaded file (private)
-app.delete("/api/uploads/:storedAs", requireAuth, async (req, res) => {
-  try {
-    const storedAs = req.params.storedAs;
-
-    if (!isSafeStoredName(storedAs)) {
-      return res.status(400).json({ ok: false, error: "Invalid file id" });
-    }
-
-    const listed = listUploadedFromCorpus();
-    const found = listed.find((x) => x.storedAs === storedAs);
-    if (!found) {
-      return res.status(404).json({ ok: false, error: "Upload not found" });
-    }
-
-    const removedChunks = removeUploadFromCorpus(storedAs);
-
-    const abs = path.join(UPLOAD_DIR, storedAs);
+// Delete an uploaded file (private, admin only)
+app.delete(
+  "/api/uploads/:storedAs",
+  authenticateToken,
+  requirePermission("docs:delete"),
+  async (req, res) => {
     try {
-      await fs.unlink(abs);
-    } catch {}
+      const storedAs = req.params.storedAs;
 
-    await saveEmbedCache();
-    res.json({ ok: true, removedChunks, removedFile: storedAs, totalChunks: corpus.length });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+      // defensive filename guard
+      if (typeof storedAs !== "string" || !/^[A-Za-z0-9._-]+$/.test(storedAs)) {
+        return res.status(400).json({ ok: false, error: "Invalid file id" });
+      }
+
+      const doc = stmt.getUploadDocByStored.get(storedAs);
+      if (!doc) return res.status(404).json({ ok: false, error: "Upload not found" });
+
+      // delete disk file
+      const abs = path.join(UPLOAD_DIR, storedAs);
+      try {
+        await fs.unlink(abs);
+      } catch {}
+
+      // delete doc row (cascades chunks)
+      stmt.deleteDocById.run(doc.id);
+
+      res.json({ ok: true, removedFile: storedAs });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   }
-});
+);
 
 // Reindex from /public PDFs (private)
-app.post("/api/reindex", requireAuth, async (_req, res) => {
+app.post("/api/reindex", authenticateToken, async (_req, res) => {
   try {
-    await indexPublicPDFs();
-    await saveEmbedCache();
-    res.json({ ok: true, chunks: corpus.length });
+    // Force reindex public docs (embeddings remain cached by text_hash)
+    await indexPublicPDFs({ force: true });
+    res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -577,7 +555,7 @@ function keywordScore(query, chunk) {
   const c = normalize(chunk);
 
   const keys = [];
-  const idMatch = q.match(/cip[-\s]?0?\d{2}(-\d+)?/g);
+  const idMatch = q.match(/cip[-\s]?0?\d{2,3}(-\d+)?/g);
   if (idMatch) keys.push(...idMatch.map((x) => x.replace(/\s+/g, "")));
   keys.push(
     "purpose",
@@ -594,50 +572,56 @@ function keywordScore(query, chunk) {
   return score;
 }
 
+// DB-backed retrieval
 async function retrieveTopK(query, k = 6) {
-  if (!corpus.length) return [];
   const q = query || "";
   const qNorm = normalize(q);
 
-  const [qvec] = await embedTexts([q]);
+  // Embed query
+  const qvec = await embedTextSingle(q);
 
-  const scored = corpus
-    .filter((c) => Array.isArray(c.embedding) && c.embedding.length)
-    .map((c, idx) => {
-      const cosBase = cosineSim(qvec, c.embedding) || 0;
-      let kw = keywordScore(q, c.chunk) || 0;
+  // If user mentions a base standard (CIP-005), pull candidates only for that base
+  const baseMatch = q.match(/\bCIP[-\s]?(\d{1,3})(?![-\s]?\d)\b/i);
+  let candidates;
 
-      // boost matches on filename/source when user mentions them
-      const fname = (c.meta?.filename || "").toLowerCase();
-      const sourceLabel = (c.source || "").toLowerCase();
-
-      let filenameBoost = 0;
-      if (fname && qNorm.includes(fname)) filenameBoost += 5;
-      if (sourceLabel && qNorm.includes(sourceLabel)) filenameBoost += 3;
-
-      kw += filenameBoost;
-
-      const blended = cosBase * 0.7 + Math.min(kw, 6) * 0.3;
-      return { idx, cos: cosBase, kw, score: blended };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k);
-
-  // CIP exact-id fallback
-  if (!scored.some((s) => s.kw > 0)) {
-    const id = (q.match(/cip[-\s]?0?\d{2}(-\d+)?/i) || [])[0];
-    if (id) {
-      const normId = id.toLowerCase().replace(/\s+/g, "");
-      const exacts = [];
-      for (let i = 0; i < corpus.length; i++) {
-        const c = normalize(corpus[i].chunk).replace(/\s+/g, "");
-        if (c.includes(normId)) exacts.push({ idx: i, score: 1e6 });
-      }
-      if (exacts.length) return exacts.slice(0, k).map((e) => corpus[e.idx]);
-    }
+  if (baseMatch) {
+    const num = String(baseMatch[1]).padStart(3, "0");
+    const base = `CIP-${num}`;
+    candidates = stmt.fetchChunksForStandardBase.all(base, 2500);
+  } else {
+    candidates = stmt.fetchChunkCandidates.all(2500);
   }
 
-  return scored.map((s) => corpus[s.idx]);
+  if (!candidates.length) return [];
+
+  // Bulk load embeddings for candidate hashes
+  const hashes = candidates.map((c) => c.text_hash).filter(Boolean);
+  const embMap = getEmbeddingsBulk(EMBED_MODEL, hashes);
+
+  // Score candidates
+  const scored = [];
+  for (const c of candidates) {
+    const vec = embMap.get(c.text_hash);
+    if (!Array.isArray(vec) || !vec.length) continue;
+
+    const cosBase = cosineSim(qvec, vec) || 0;
+    let kw = keywordScore(q, c.text) || 0;
+
+    // mild boost if user mentions label-ish strings
+    const label = (c.source_label || "").toLowerCase();
+    if (label && qNorm.includes(label)) kw += 2;
+
+    const blended = cosBase * 0.7 + Math.min(kw, 6) * 0.3;
+    scored.push({
+      score: blended,
+      chunk: c.text,
+      source: c.source_label,
+      href: c.href || null,
+    });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, k);
 }
 
 function buildContextBlock(chunks) {
@@ -661,11 +645,13 @@ ${c.chunk}
 // ===============================
 // Retrieval + streaming RAG chat (private)
 // ===============================
-app.post("/api/chat", requireAuth, async (req, res) => {
+app.post("/api/chat", authenticateToken, async (req, res) => {
   const { model = CHAT_MODEL, messages = [], temperature = 0.3, max_tokens } = req.body;
 
   const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
-  const normalizedUser = normalizeStandardsInQuery(lastUser);
+
+  // DB-driven standard normalization (latest version mapping)
+  const normalizedUser = rag.normalizeStandardsInQuery(lastUser);
 
   // Retrieve relevant chunks using the normalized query
   let retrieved = [];
@@ -739,11 +725,3 @@ app.post("/api/chat", requireAuth, async (req, res) => {
 app.listen(5173, () => {
   console.log(`UI running on http://localhost:5173`);
 });
-
-// Save cache on shutdown
-for (const sig of ["SIGINT", "SIGTERM"]) {
-  process.on(sig, async () => {
-    await saveEmbedCache();
-    process.exit(0);
-  });
-}
