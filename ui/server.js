@@ -1,3 +1,4 @@
+// ui/server.js
 import express from "express";
 import fetch from "node-fetch";
 import path from "path";
@@ -8,9 +9,10 @@ import pdfParse from "pdf-parse";
 import { createHash } from "crypto";
 import multer from "multer";
 
+// Admin / Auth
+import adminRoutes from "./adminRoutes.js";
 import session from "express-session";
 import SQLiteStoreFactory from "connect-sqlite3";
-
 import { authRouter } from "./auth/auth.routes.js";
 import { requireAuth } from "./auth/auth.middleware.js";
 
@@ -58,9 +60,11 @@ app.use(
   })
 );
 
-
 // ---- Auth routes (public) ----
 app.use("/api/auth", authRouter);
+
+// ---- Admin API Routes ----
+app.use("/api/admin", adminRoutes);
 
 // ---- Config ----
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
@@ -245,9 +249,7 @@ function registerStandardFromFilename(pdfName) {
       latestVersion: versionNum,
     };
   } else {
-    if (!existing.versions.includes(versioned)) {
-      existing.versions.push(versioned);
-    }
+    if (!existing.versions.includes(versioned)) existing.versions.push(versioned);
     if (versionNum > existing.latestVersion) {
       existing.latest = versioned;
       existing.latestVersion = versionNum;
@@ -266,7 +268,8 @@ function normalizeStandardsInQuery(question = "") {
     const num = String(numRaw).padStart(3, "0"); // "5" -> "005"
     const base = `CIP-${num}`;
     const info = standardMap[base];
-    if (!info || !info.latest) return match; // unknown base; leave alone
+    if (!info || !info.latest) return match;
+    // Preserve what the user wrote, but append the latest version so embeddings see it
     return `${match} (${info.latest})`;
   });
 }
@@ -316,7 +319,7 @@ function isSafeStoredName(name) {
 
 // FAST, reliable: index public PDFs as a single text stream (ensures server starts)
 async function indexPublicPDFs() {
-  // rebuild just the public part; keep uploads intact if you want
+  // rebuild just the public part; keep uploads intact
   for (let i = corpus.length - 1; i >= 0; i--) {
     if (corpus[i]?.meta?.origin === "public") corpus.splice(i, 1);
   }
@@ -328,7 +331,7 @@ async function indexPublicPDFs() {
     const filePath = path.join(PUBLIC_DIR, pdfName);
 
     // register this PDF as a CIP standard version if it matches the pattern
-    const stdInfo = registerStandardFromFilename(pdfName); // { base, versioned } or null
+    const stdInfo = registerStandardFromFilename(pdfName);
 
     const buf = await fs.readFile(filePath);
     const parsed = await pdfParse(buf);
@@ -339,7 +342,7 @@ async function indexPublicPDFs() {
     for (let i = 0; i < chunks.length; i += batchSize) {
       const slice = chunks.slice(i, i + batchSize);
 
-      // inject aliases into embedded text
+      // inject aliases (e.g. "CIP-005 CIP-005-6") into the embedded text
       const textsForEmbedding = stdInfo
         ? slice.map((t) => `${stdInfo.base} ${stdInfo.versioned}\n${t}`)
         : slice;
@@ -357,10 +360,7 @@ async function indexPublicPDFs() {
             origin: "public",
             chunkIndex: i + j,
             ...(stdInfo
-              ? {
-                  standardBase: stdInfo.base,
-                  standardVersion: stdInfo.versioned,
-                }
+              ? { standardBase: stdInfo.base, standardVersion: stdInfo.versioned }
               : {}),
           },
         });
@@ -444,7 +444,7 @@ async function extractUploadedFilePages(absPath, mimetype, originalname) {
 }
 
 // ===============================
-// Protect most API routes
+// Protect most API routes (session-based)
 // ===============================
 
 // Corpus by source (private)
@@ -607,6 +607,7 @@ async function retrieveTopK(query, k = 6) {
       const cosBase = cosineSim(qvec, c.embedding) || 0;
       let kw = keywordScore(q, c.chunk) || 0;
 
+      // boost matches on filename/source when user mentions them
       const fname = (c.meta?.filename || "").toLowerCase();
       const sourceLabel = (c.source || "").toLowerCase();
 
@@ -622,6 +623,7 @@ async function retrieveTopK(query, k = 6) {
     .sort((a, b) => b.score - a.score)
     .slice(0, k);
 
+  // CIP exact-id fallback
   if (!scored.some((s) => s.kw > 0)) {
     const id = (q.match(/cip[-\s]?0?\d{2}(-\d+)?/i) || [])[0];
     if (id) {
@@ -663,9 +665,9 @@ app.post("/api/chat", requireAuth, async (req, res) => {
   const { model = CHAT_MODEL, messages = [], temperature = 0.3, max_tokens } = req.body;
 
   const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
-
   const normalizedUser = normalizeStandardsInQuery(lastUser);
 
+  // Retrieve relevant chunks using the normalized query
   let retrieved = [];
   try {
     retrieved = await retrieveTopK(normalizedUser, 6);
@@ -712,6 +714,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
   } catch {
     // ignore midstream disconnects
   } finally {
+    // Deduplicate sources so each PDF appears only once
     const seen = new Set();
     const sources = [];
 

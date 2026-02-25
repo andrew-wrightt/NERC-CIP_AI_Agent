@@ -76,10 +76,25 @@ body {
   background: var(--bg);
   color: var(--text);
 }
-.app { max-width: 850px; margin: 0 auto; display: grid; grid-template-rows: auto 1fr auto; height: 100vh; padding: 12px; gap: 12px; }
+.app { max-width: 1100px; margin: 0 auto; display: grid; grid-template-rows: auto 1fr auto; height: 100vh; padding: 12px 24px; gap: 12px; width: 100%; }
 header { display: flex; align-items: center; justify-content: space-between; }
-.controls { display: flex; gap: 12px; }
+.controls { display: flex; gap: 12px; align-items: center; }
 label { display: flex; flex-direction: column; font-size: 12px; color: car(--muted); }
+
+/* Admin link */
+.admin-link {
+  padding: 8px 14px;
+  border: 1px solid var(--btn-border);
+  border-radius: 10px;
+  background: var(--btn-bg);
+  color: var(--btn-text);
+  text-decoration: none;
+  font-size: 14px;
+  transition: background 0.15s;
+}
+.admin-link:hover {
+  background: var(--btn-bg-hover);
+}
 
 /* =========================
    FILE MANAGER
@@ -302,122 +317,223 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
 .toggle input:checked + .slider::after { transform: translateX(18px); }
 .toggle .toggle-text { font-size: 12px; color: var(--muted); }
 
-/* ===== 
-Auth UI (login overlay + auth bar) 
-===== */
-.authbar{
-  display:flex;
-  gap:10px;
-  align-items:center;
-  justify-content:flex-end;
-  margin-bottom:8px;
+/* =========================
+   AUTH SCREEN
+   ========================= */
+.auth-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
 }
 
-.auth-user{
-  font-size: 0.9rem;
-  opacity: 0.9;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--panel-border, #2a2f3a);
-  background: rgba(255,255,255,0.06);
+.auth-screen[hidden] {
+  display: none;
 }
 
-.auth-logout{
-  padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid var(--btn-border, #444);
-  background: var(--btn-bg, #fff);
-  color: var(--btn-text, #111);
-  cursor: pointer;
+.auth-container {
+  width: 100%;
+  max-width: 400px;
 }
 
-.login-overlay{
-  position: fixed;
-  inset: 0;
-  display:none !important;
-  justify-content:center;
-  align-items:center;
-  background: rgba(0,0,0,0.55);
-  backdrop-filter: blur(2px);
-  z-index: 9999;
+.auth-header {
+  text-align: center;
+  margin-bottom: 32px;
 }
 
-.login-card{
-  width: 420px;
-  max-width: 92vw;
+.auth-header h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+}
+
+.auth-header p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.auth-form {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
   border-radius: 16px;
-  border: 1px solid var(--panel-border, rgba(255,255,255,0.12));
-  background: var(--panel, rgba(20,20,24,0.95));
-  color: var(--text, #e5e7eb);
-  padding: 18px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+  padding: 32px;
 }
 
-.login-card h2{
-  margin: 0 0 10px 0;
+.auth-form[hidden] {
+  display: none;
 }
 
-.login-label{
-  display:block;
-  margin-top: 10px;
+.auth-form h2 {
+  margin: 0 0 24px;
+  font-size: 20px;
+  text-align: center;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
   margin-bottom: 6px;
-  font-size: 0.85rem;
-  opacity: 0.85;
 }
 
-.login-input{
-  width:100%;
-  box-sizing:border-box;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--panel-border, rgba(255,255,255,0.12));
-  background: rgba(0,0,0,0.25);
-  color: inherit;
+.form-group input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: var(--btn-bg);
+  font-size: 15px;
+}
+
+.form-group input:focus {
   outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
 }
 
-.login-input:focus{
-  border-color: rgba(99,102,241,0.8);
+.form-group small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
-.login-row{
-  margin-top: 14px;
-  display:flex;
-  justify-content:flex-end;
-}
-
-.login-btn{
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--btn-border, rgba(255,255,255,0.15));
-  background: rgba(99,102,241,0.9);
+.btn-primary {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
   color: white;
-  cursor:pointer;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
 }
 
-.login-notice{
-  font-size: 0.9rem;
-  opacity: 0.9;
-  min-height: 18px;
+.btn-primary:hover {
+  background: #0284c7;
 }
 
-.login-error{
-  margin-top: 10px;
+.error-msg {
+  padding: 10px 14px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #dc2626;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.error-msg[hidden] {
+  display: none;
+}
+
+.success-msg {
+  padding: 10px 14px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  color: #16a34a;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.success-msg[hidden] {
+  display: none;
+}
+
+.auth-switch {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.auth-switch a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.auth-switch a:hover {
+  text-decoration: underline;
+}
+
+/* =========================
+   MAIN APP (when logged in)
+   ========================= */
+.main-app {
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  height: 100vh;
+  padding: 12px 24px;
+  gap: 12px;
+  max-width: 1100px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.main-app[hidden] {
+  display: none;
+}
+
+.user-display {
+  padding: 6px 12px;
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--chip-text);
+}
+
+.admin-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.admin-controls[hidden] {
+  display: none;
+}
+
+.btn-logout {
+  padding: 8px 14px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #dc2626;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-logout:hover {
+  background: #fee2e2;
+}
+
+/* Dark mode adjustments for auth */
+html[data-theme="dark"] .error-msg {
+  background: #450a0a;
+  border-color: #7f1d1d;
   color: #fca5a5;
-  min-height: 18px;
-  font-size: 0.9rem;
 }
 
-.login-footnote{
-  margin-top: 10px;
-  font-size: 0.78rem;
-  opacity: 0.65;
+html[data-theme="dark"] .success-msg {
+  background: #052e16;
+  border-color: #166534;
+  color: #86efac;
 }
 
-/* Optional: visually disable app while login overlay is active */
-body.auth-locked .app{
-  filter: blur(1px);
-  pointer-events: none;
-  user-select: none;
+html[data-theme="dark"] .btn-logout {
+  background: #450a0a;
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+html[data-theme="dark"] .btn-logout:hover {
+  background: #7f1d1d;
 }

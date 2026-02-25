@@ -1,5 +1,5 @@
 {
-  "name": "mistral-ui",
+  "name": "nerc-cip-ai-agent",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,6 +13,10 @@
     "express-session": "^1.19.0",
     "multer": "^1.4.5-lts.2",
     "node-fetch": "^3.3.2",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "multer": "^1.4.5-lts.2",
+    "bcrypt": "^5.1.1",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^9.0.1"
   }
 }
