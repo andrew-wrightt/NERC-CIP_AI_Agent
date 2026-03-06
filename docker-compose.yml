@@ -9,7 +9,15 @@ services:
       - "5173:5173"
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
-      - SESSION_SECRET=change-this-to-a-long-random-string
+      - SESSION_SECRET=ce2e9d55be79f3f4b6f8b34d15cc6b730efc2d77c1d13869f8b58d0f9a2b70b4
+      - JWT_SECRET=2bcea093cdf93a78d84acc07d7cc31f6a70155a34f4f9348d0a1085fcf3a501f
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_SECURE=false
+      - SMTP_USER=nerccipai@gmail.com
+      - SMTP_PASS=chvtovctgutrylls 
+      - SMTP_FROM=nerccipai@gmail.com
+      - MFA_ISSUER=NERC-CIP AI Agent
     volumes:
       - ./ui/uploads:/app/uploads
       - ./ui/cache:/app/cache

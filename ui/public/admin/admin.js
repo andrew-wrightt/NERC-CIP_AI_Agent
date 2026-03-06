@@ -48,33 +48,28 @@ const statLockedUsers = document.getElementById('stat-locked-users');
 // =========================
 // Auth Functions
 // =========================
-async function login(username, password) {
-  try {
-    const res = await fetch(`${API_BASE}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    });
-    
-    const data = await res.json();
-    
-    if (!res.ok || !data.ok) {
-      throw new Error(data.error || 'Login failed');
-    }
-    
-    authToken = data.token;
-    currentUser = data.user;
-    
-    // Store in session
-    sessionStorage.setItem('authToken', authToken);
-    sessionStorage.setItem('currentUser', JSON.stringify(currentUser));
-    
-    showDashboard();
-    return true;
-  } catch (e) {
-    throw e;
+async function login(username, password, otp) {
+  const res = await fetch(`${API_BASE}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, otp })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || 'Login failed');
   }
-}
+
+  authToken = data.token;
+  currentUser = data.user;
+
+  sessionStorage.setItem('authToken', authToken);
+  sessionStorage.setItem('currentUser', JSON.stringify(currentUser));
+
+  showDashboard();
+  return true;
+} 
 
 function logout() {
   authToken = null;
@@ -161,20 +156,29 @@ async function loadUsers() {
 
 function renderUsers(users) {
   if (!users || users.length === 0) {
-    usersTbody.innerHTML = '<tr><td colspan="6" style="text-align:center">No users found</td></tr>';
+    usersTbody.innerHTML = '<tr><td colspan="7" style="text-align:center">No users found</td></tr>';
     return;
   }
-  
+
   usersTbody.innerHTML = users.map(u => `
     <tr data-id="${u.id}">
       <td><strong>${escapeHtml(u.username)}</strong></td>
       <td><span class="role-badge ${u.role}">${u.role}</span></td>
       <td><span class="status-${u.status}">${u.status}</span></td>
+      <td>${u.mfaEnabled ? `Enabled${u.mfaEmail ? `<br><small>${escapeHtml(u.mfaEmail)}</small>` : ''}` : 'Disabled'}</td>
       <td>${u.lastLogin ? formatDate(u.lastLogin) : 'Never'}</td>
       <td>${u.failedAttempts || 0}</td>
       <td class="action-btns">
         <button class="btn-edit" onclick="editUser('${u.id}')">Edit</button>
-        <button class="btn-delete" onclick="confirmDelete('${u.id}', '${escapeHtml(u.username)}')" 
+        <button class="btn-edit" onclick="setupMfa('${u.id}', '${escapeHtml(u.username)}')">
+          ${u.mfaEnabled ? 'Reset MFA' : 'Setup MFA'}
+        </button>
+        ${
+          u.mfaEnabled
+            ? `<button class="btn-secondary" onclick="disableMfa('${u.id}', '${escapeHtml(u.username)}')">Disable MFA</button>`
+            : ''
+        }
+        <button class="btn-delete" onclick="confirmDelete('${u.id}', '${escapeHtml(u.username)}')"
           ${u.id === currentUser?.id ? 'disabled title="Cannot delete yourself"' : ''}>Delete</button>
       </td>
     </tr>
@@ -223,6 +227,27 @@ async function deleteUser(id) {
   const data = await res.json();
   if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to delete user');
   
+  return data;
+}
+
+async function setupMfaRequest(id, email) {
+  const res = await apiRequest(`/users/${id}/mfa/setup`, {
+    method: 'POST',
+    body: JSON.stringify({ email })
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to set up MFA');
+  return data;
+}
+
+async function disableMfaRequest(id) {
+  const res = await apiRequest(`/users/${id}/mfa/disable`, {
+    method: 'POST'
+  });
+
+  const data = await res.json();
+  if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to disable MFA');
   return data;
 }
 
@@ -313,6 +338,33 @@ window.editUser = async function(id) {
   }
 };
 
+window.setupMfa = async function(id, username) {
+  const email = prompt(`Enter the email address to send the MFA QR code for ${username}:`);
+  if (!email) return;
+
+  try {
+    const result = await setupMfaRequest(id, email.trim());
+    alert(result.message || 'MFA setup email sent.');
+    loadUsers();
+    loadAuditLog();
+  } catch (e) {
+    alert('MFA setup failed: ' + e.message);
+  }
+};
+
+window.disableMfa = async function(id, username) {
+  if (!confirm(`Disable MFA for ${username}?`)) return;
+
+  try {
+    const result = await disableMfaRequest(id);
+    alert(result.message || 'MFA disabled.');
+    loadUsers();
+    loadAuditLog();
+  } catch (e) {
+    alert('Disable MFA failed: ' + e.message);
+  }
+};
+
 window.confirmDelete = function(id, username) {
   deletingUserId = id;
   deleteUsername.textContent = username;
@@ -331,15 +383,16 @@ function hideDeleteModal() {
 // Login form
 loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  
+
   const username = document.getElementById('login-username').value.trim();
   const password = document.getElementById('login-password').value;
-  
+  const otp = document.getElementById('login-otp').value.trim();
+
   loginError.hidden = true;
   document.getElementById('login-btn').disabled = true;
-  
+
   try {
-    await login(username, password);
+    await login(username, password, otp);
   } catch (e) {
     loginError.textContent = e.message;
     loginError.hidden = false;

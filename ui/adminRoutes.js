@@ -12,6 +12,9 @@ import { v4 as uuidv4 } from "uuid";
 import Database from "better-sqlite3";
 import path from "path";
 import fsSync from "fs";
+import nodemailer from "nodemailer";
+import QRCode from "qrcode";
+import { authenticator } from "otplib";
 
 const router = express.Router();
 
@@ -19,10 +22,23 @@ const router = express.Router();
 // Configuration
 // =========================
 const JWT_SECRET = process.env.JWT_SECRET || "nerc-cip-secret-change-in-production";
-const JWT_EXPIRES_IN = "2h"; // Session timeout
+const JWT_EXPIRES_IN = "2h";
 const BCRYPT_ROUNDS = 12;
 const MAX_LOGIN_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
+
+// Email / MFA config
+const SMTP_HOST = process.env.SMTP_HOST || "";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+const SMTP_SECURE = String(process.env.SMTP_SECURE || "false").toLowerCase() === "true";
+const SMTP_USER = process.env.SMTP_USER || "";
+const SMTP_PASS = process.env.SMTP_PASS || "";
+const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER || "no-reply@localhost";
+const MFA_ISSUER = process.env.MFA_ISSUER || "NERC-CIP AI Agent";
+
+authenticator.options = {
+  window: 1,
+};
 
 // =========================
 // SQLite DB
@@ -33,10 +49,8 @@ if (!fsSync.existsSync(DATA_DIR)) fsSync.mkdirSync(DATA_DIR, { recursive: true }
 const DB_PATH = path.join(DATA_DIR, "auth.sqlite");
 const db = new Database(DB_PATH);
 
-// WAL helps concurrency & durability
 db.pragma("journal_mode = WAL");
 
-// Schema
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -66,15 +80,33 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);
 `);
 
-// Prepared statements
+function ensureColumn(tableName, columnName, alterSql) {
+  const cols = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  const exists = cols.some((c) => c.name === columnName);
+  if (!exists) db.exec(alterSql);
+}
+
+ensureColumn("users", "mfa_enabled", `ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`);
+ensureColumn("users", "mfa_secret", `ALTER TABLE users ADD COLUMN mfa_secret TEXT`);
+ensureColumn("users", "mfa_email", `ALTER TABLE users ADD COLUMN mfa_email TEXT`);
+ensureColumn("users", "mfa_created_at", `ALTER TABLE users ADD COLUMN mfa_created_at TEXT`);
+
 const stmtGetUserById = db.prepare(`SELECT * FROM users WHERE id = ?`);
 const stmtGetUserByUsernameCI = db.prepare(
   `SELECT * FROM users WHERE LOWER(username) = LOWER(?) LIMIT 1`
 );
+
 const stmtInsertUser = db.prepare(`
-  INSERT INTO users (id, username, password_hash, role, status, failed_attempts, locked_until, last_login, created_at, updated_at)
-  VALUES (@id, @username, @password_hash, @role, @status, @failed_attempts, @locked_until, @last_login, @created_at, @updated_at)
+  INSERT INTO users (
+    id, username, password_hash, role, status, failed_attempts, locked_until,
+    last_login, created_at, updated_at, mfa_enabled, mfa_secret, mfa_email, mfa_created_at
+  )
+  VALUES (
+    @id, @username, @password_hash, @role, @status, @failed_attempts, @locked_until,
+    @last_login, @created_at, @updated_at, @mfa_enabled, @mfa_secret, @mfa_email, @mfa_created_at
+  )
 `);
+
 const stmtUpdateUserAuthFields = db.prepare(`
   UPDATE users
   SET password_hash = COALESCE(@password_hash, password_hash),
@@ -86,16 +118,31 @@ const stmtUpdateUserAuthFields = db.prepare(`
       updated_at = @updated_at
   WHERE id = @id
 `);
+
+const stmtUpdateUserMfa = db.prepare(`
+  UPDATE users
+  SET mfa_enabled = @mfa_enabled,
+      mfa_secret = @mfa_secret,
+      mfa_email = @mfa_email,
+      mfa_created_at = @mfa_created_at,
+      updated_at = @updated_at
+  WHERE id = @id
+`);
+
 const stmtDeleteUser = db.prepare(`DELETE FROM users WHERE id = ?`);
+
 const stmtListUsers = db.prepare(`
-  SELECT id, username, role, status, last_login, failed_attempts, created_at
+  SELECT id, username, role, status, last_login, failed_attempts, created_at,
+         mfa_enabled, mfa_email, mfa_created_at
   FROM users
   ORDER BY created_at DESC
 `);
+
 const stmtInsertAudit = db.prepare(`
   INSERT INTO audit_logs (id, timestamp, event, username, target, details, ip_address)
   VALUES (@id, @timestamp, @event, @username, @target, @details, @ip_address)
 `);
+
 const stmtListAudit = db.prepare(`
   SELECT id, timestamp, event, username, target, details, ip_address
   FROM audit_logs
@@ -103,11 +150,8 @@ const stmtListAudit = db.prepare(`
   LIMIT ?
 `);
 
-// Initialize with default admin user (only if no admin exists)
 function ensureDefaultAdmin() {
-  const row = db
-    .prepare(`SELECT COUNT(*) AS n FROM users WHERE role = 'admin'`)
-    .get();
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM users WHERE role = 'admin'`).get();
   if ((row?.n || 0) > 0) return;
 
   const id = uuidv4();
@@ -125,6 +169,10 @@ function ensureDefaultAdmin() {
     last_login: null,
     created_at: now,
     updated_at: now,
+    mfa_enabled: 0,
+    mfa_secret: null,
+    mfa_email: null,
+    mfa_created_at: null,
   });
 
   console.log("[auth] Seeded default admin user: admin / admin123 (change in production)");
@@ -177,6 +225,69 @@ function logAudit(event, username, target, details, ipAddress) {
 }
 
 // =========================
+// Email helper
+// =========================
+function getMailer() {
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    throw new Error("SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.");
+  }
+
+  return nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE,
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+  });
+}
+
+ async function sendMfaQrEmail({ to, username, otpUri, secret }) {
+  const transporter = getMailer();
+
+  // Generate PNG buffer instead of data URL
+  const qrBuffer = await QRCode.toBuffer(otpUri, {
+    type: "png",
+    width: 280,
+    margin: 2,
+  });
+
+  await transporter.sendMail({
+    from: SMTP_FROM,
+    to,
+    subject: `${MFA_ISSUER} MFA setup`,
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+        <h2>${MFA_ISSUER} MFA Setup</h2>
+        <p>Hello ${username},</p>
+        <p>Scan the QR code below with your authenticator app.</p>
+        <p>Supported free apps include Google Authenticator, Microsoft Authenticator, and FreeOTP.</p>
+
+        <p><strong>MFA QR Code</strong></p>
+        <p>
+          <img src="cid:mfaqr" alt="MFA QR Code" width="280" height="280" style="display:block;border:1px solid #ddd;" />
+        </p>
+
+        <p>If scanning does not work, use this manual setup key:</p>
+        <pre style="padding: 12px; background: #f4f4f4; border-radius: 6px;">${secret}</pre>
+
+        <p>Or use this OTP URI in a compatible tool:</p>
+        <pre style="padding: 12px; background: #f4f4f4; border-radius: 6px; white-space: pre-wrap;">${otpUri}</pre>
+      </div>
+    `,
+    attachments: [
+      {
+        filename: "mfa-qr.png",
+        content: qrBuffer,
+        cid: "mfaqr",
+        contentType: "image/png",
+      },
+    ],
+  });
+}
+
+// =========================
 // Authentication Middleware
 // =========================
 function authenticateToken(req, res, next) {
@@ -214,7 +325,6 @@ function authenticateToken(req, res, next) {
   }
 }
 
-// Role-based access middleware
 function requirePermission(permission) {
   return (req, res, next) => {
     if (!req.user) {
@@ -246,7 +356,6 @@ function validatePassword(password) {
 // Routes
 // =========================
 
-// Register (public - creates operator account)
 router.post("/register", async (req, res) => {
   const { username, password } = req.body;
   const ip = req.ip || req.connection?.remoteAddress || "unknown";
@@ -255,7 +364,6 @@ router.post("/register", async (req, res) => {
     return res.status(400).json({ ok: false, error: "Username and password required" });
   }
 
-  // Validate username
   if (username.length < 3 || username.length > 50) {
     return res.status(400).json({ ok: false, error: "Username must be 3-50 characters" });
   }
@@ -265,13 +373,11 @@ router.post("/register", async (req, res) => {
       .json({ ok: false, error: "Username can only contain letters, numbers, and underscores" });
   }
 
-  // Check duplicate
   const existing = stmtGetUserByUsernameCI.get(username);
   if (existing) {
     return res.status(400).json({ ok: false, error: "Username already exists" });
   }
 
-  // Validate password
   const passwordErrors = validatePassword(password);
   if (passwordErrors.length > 0) {
     return res.status(400).json({ ok: false, error: passwordErrors.join(". ") });
@@ -290,6 +396,10 @@ router.post("/register", async (req, res) => {
     last_login: null,
     created_at: now,
     updated_at: now,
+    mfa_enabled: 0,
+    mfa_secret: null,
+    mfa_email: null,
+    mfa_created_at: null,
   };
 
   stmtInsertUser.run(newUser);
@@ -298,9 +408,9 @@ router.post("/register", async (req, res) => {
   res.status(201).json({ ok: true, message: "Account created successfully" });
 });
 
-// Login
+// Login with optional OTP
 router.post("/login", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, otp } = req.body;
   const ip = req.ip || req.connection?.remoteAddress || "unknown";
 
   if (!username || !password) {
@@ -313,23 +423,20 @@ router.post("/login", async (req, res) => {
     return res.status(401).json({ ok: false, error: "Invalid credentials" });
   }
 
-  // Check lock
   if (user.locked_until && new Date(user.locked_until) > new Date()) {
     const remaining = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
     logAudit("login_blocked", username, null, `Account locked for ${remaining} more minutes`, ip);
     return res.status(403).json({ ok: false, error: `Account locked. Try again in ${remaining} minutes.` });
   }
 
-  // Check active
   if (user.status !== "active") {
     logAudit("login_failed", username, null, `Account status: ${user.status}`, ip);
     return res.status(403).json({ ok: false, error: "Account is not active" });
   }
 
-  // Verify password
-  const valid = await bcrypt.compare(password, user.password_hash);
+  const validPassword = await bcrypt.compare(password, user.password_hash);
 
-  if (!valid) {
+  if (!validPassword) {
     const failedAttempts = (user.failed_attempts || 0) + 1;
     let lockedUntil = user.locked_until;
     let status = user.status;
@@ -355,7 +462,23 @@ router.post("/login", async (req, res) => {
     return res.status(401).json({ ok: false, error: "Invalid credentials" });
   }
 
-  // Successful login
+  if (Number(user.mfa_enabled) === 1) {
+    if (!otp || !/^\d{6}$/.test(String(otp))) {
+      logAudit("login_failed", username, null, "Missing or invalid OTP format", ip);
+      return res.status(401).json({ ok: false, error: "OTP code is required" });
+    }
+
+    const validOtp = authenticator.verify({
+      token: String(otp),
+      secret: user.mfa_secret || "",
+    });
+
+    if (!validOtp) {
+      logAudit("login_failed", username, null, "Invalid OTP", ip);
+      return res.status(401).json({ ok: false, error: "Invalid credentials" });
+    }
+  }
+
   const now = new Date().toISOString();
   stmtUpdateUserAuthFields.run({
     id: user.id,
@@ -374,18 +497,29 @@ router.post("/login", async (req, res) => {
     { expiresIn: JWT_EXPIRES_IN }
   );
 
-  logAudit("login", username, null, "Successful login", ip);
+  logAudit("login", username, null, Number(user.mfa_enabled) === 1 ? "Successful login with MFA" : "Successful login", ip);
 
   res.json({
     ok: true,
     token,
-    user: { id: user.id, username: user.username, role: user.role },
+    user: { id: user.id, username: user.username, role: user.role, mfaEnabled: Number(user.mfa_enabled) === 1 },
   });
 });
 
 // Get all users (admin only)
 router.get("/users", authenticateToken, requirePermission("users:read"), (_req, res) => {
-  const userList = stmtListUsers.all();
+  const userList = stmtListUsers.all().map((u) => ({
+    id: u.id,
+    username: u.username,
+    role: u.role,
+    status: u.status,
+    lastLogin: u.last_login,
+    failedAttempts: u.failed_attempts,
+    createdAt: u.created_at,
+    mfaEnabled: Number(u.mfa_enabled) === 1,
+    mfaEmail: u.mfa_email || "",
+    mfaCreatedAt: u.mfa_created_at || null,
+  }));
   res.json({ ok: true, users: userList });
 });
 
@@ -404,6 +538,9 @@ router.get("/users/:id", authenticateToken, requirePermission("users:read"), (re
       lastLogin: user.last_login,
       failedAttempts: user.failed_attempts,
       createdAt: user.created_at,
+      mfaEnabled: Number(user.mfa_enabled) === 1,
+      mfaEmail: user.mfa_email || "",
+      mfaCreatedAt: user.mfa_created_at || null,
     },
   });
 });
@@ -447,13 +584,17 @@ router.post("/users", authenticateToken, requirePermission("users:write"), async
     last_login: null,
     created_at: now,
     updated_at: now,
+    mfa_enabled: 0,
+    mfa_secret: null,
+    mfa_email: null,
+    mfa_created_at: null,
   });
 
   logAudit("user_created", req.user.username, username, `Role: ${role}`, ip);
 
   res.status(201).json({
     ok: true,
-    user: { id, username, role, status },
+    user: { id, username, role, status, mfaEnabled: false },
   });
 });
 
@@ -493,7 +634,6 @@ router.put("/users/:id", authenticateToken, requirePermission("users:write"), as
     changes.push(`status: ${user.status} -> ${status}`);
   }
 
-  // If unlocking, reset lockout
   let failedAttempts = null;
   let lockedUntil = null;
   if (newStatus === "active" && user.status === "locked") {
@@ -519,8 +659,82 @@ router.put("/users/:id", authenticateToken, requirePermission("users:write"), as
   const updated = stmtGetUserById.get(user.id);
   res.json({
     ok: true,
-    user: { id: updated.id, username: updated.username, role: updated.role, status: updated.status },
+    user: {
+      id: updated.id,
+      username: updated.username,
+      role: updated.role,
+      status: updated.status,
+      mfaEnabled: Number(updated.mfa_enabled) === 1,
+      mfaEmail: updated.mfa_email || "",
+    },
   });
+});
+
+// Setup MFA and email QR code
+router.post("/users/:id/mfa/setup", authenticateToken, requirePermission("users:write"), async (req, res) => {
+  const user = stmtGetUserById.get(req.params.id);
+  const ip = req.ip || "unknown";
+  const email = String(req.body?.email || "").trim();
+
+  if (!user) return res.status(404).json({ ok: false, error: "User not found" });
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ ok: false, error: "Valid email is required" });
+  }
+
+  try {
+    const secret = authenticator.generateSecret();
+    const otpUri = authenticator.keyuri(user.username, MFA_ISSUER, secret);
+
+    await sendMfaQrEmail({
+      to: email,
+      username: user.username,
+      otpUri,
+      secret,
+    });
+
+    const now = new Date().toISOString();
+    stmtUpdateUserMfa.run({
+      id: user.id,
+      mfa_enabled: 1,
+      mfa_secret: secret,
+      mfa_email: email,
+      mfa_created_at: now,
+      updated_at: now,
+    });
+
+    logAudit("mfa_enabled", req.user.username, user.username, `MFA setup email sent to ${email}`, ip);
+
+    return res.json({
+      ok: true,
+      message: `MFA setup email sent to ${email}`,
+    });
+  } catch (e) {
+    console.error("MFA setup error:", e);
+    return res.status(500).json({ ok: false, error: e.message || "Failed to set up MFA" });
+  }
+});
+
+// Disable MFA
+router.post("/users/:id/mfa/disable", authenticateToken, requirePermission("users:write"), (req, res) => {
+  const user = stmtGetUserById.get(req.params.id);
+  const ip = req.ip || "unknown";
+
+  if (!user) return res.status(404).json({ ok: false, error: "User not found" });
+
+  const now = new Date().toISOString();
+  stmtUpdateUserMfa.run({
+    id: user.id,
+    mfa_enabled: 0,
+    mfa_secret: null,
+    mfa_email: null,
+    mfa_created_at: null,
+    updated_at: now,
+  });
+
+  logAudit("mfa_disabled", req.user.username, user.username, "MFA disabled", ip);
+
+  return res.json({ ok: true, message: "MFA disabled" });
 });
 
 // Delete user (admin only)
@@ -539,7 +753,10 @@ router.delete("/users/:id", authenticateToken, requirePermission("users:delete")
 // Get audit logs (admin only)
 router.get("/audit", authenticateToken, requirePermission("audit:read"), (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 100, 500);
-  const logs = stmtListAudit.all(limit);
+  const logs = stmtListAudit.all(limit).map((log) => ({
+    ...log,
+    ipAddress: log.ip_address,
+  }));
   res.json({ ok: true, logs });
 });
 

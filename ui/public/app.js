@@ -66,25 +66,25 @@ if (themeToggle) {
 // =========================
 // Auth Functions
 // =========================
-async function login(username, password) {
+async function login(username, password, otp) {
   const res = await fetch(`${API_BASE}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
+    body: JSON.stringify({ username, password, otp })
   });
-  
+
   const data = await res.json();
-  
+
   if (!res.ok || !data.ok) {
     throw new Error(data.error || 'Login failed');
   }
-  
+
   authToken = data.token;
   currentUser = data.user;
-  
+
   sessionStorage.setItem('authToken', authToken);
   sessionStorage.setItem('currentUser', JSON.stringify(currentUser));
-  
+
   showMainApp();
 }
 
@@ -176,14 +176,15 @@ showLoginLink?.addEventListener('click', (e) => {
 
 loginForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
-  
+
   const username = document.getElementById('login-username').value.trim();
   const password = document.getElementById('login-password').value;
-  
+  const otp = document.getElementById('login-otp').value.trim();
+
   loginError.hidden = true;
-  
+
   try {
-    await login(username, password);
+    await login(username, password, otp);
   } catch (err) {
     loginError.textContent = err.message;
     loginError.hidden = false;
