@@ -142,7 +142,7 @@ function showMainApp() {
   mainApp.hidden = false;
   
   // Update user display
-  userDisplay.textContent = `👤 ${currentUser?.username || 'User'} (${currentUser?.role || 'unknown'})`;
+  userDisplay.textContent = `${currentUser?.username || 'User'} (${currentUser?.role || 'unknown'})`;
   
   // Show admin controls only for admins
   if (currentUser?.role === 'admin') {

@@ -418,6 +418,7 @@ navBtns.forEach(btn => {
     // Refresh data when switching tabs
     if (tab === 'users') loadUsers();
     if (tab === 'audit') loadAuditLog(auditFilter.value);
+    if (tab === 'ingestion') { loadWatcherStatus(); }
   });
 });
 
@@ -515,6 +516,230 @@ function formatDate(dateStr) {
   const d = new Date(dateStr);
   return d.toLocaleString();
 }
+
+// =========================
+// #113 — Scraping Pipeline UI
+// =========================
+const runScrapeBtn = document.getElementById('run-scrape-btn');
+const scrapeUrlInput = document.getElementById('scrape-url');
+const scrapeStatus = document.getElementById('scrape-status');
+const scrapeSpinner = document.getElementById('scrape-spinner');
+const scrapeResult = document.getElementById('scrape-result');
+const loadManifestBtn = document.getElementById('load-manifest-btn');
+const scrapeManifest = document.getElementById('scrape-manifest');
+
+async function runScraper() {
+  const url = scrapeUrlInput?.value?.trim() || null;
+  if (runScrapeBtn) runScrapeBtn.disabled = true;
+  if (scrapeStatus) scrapeStatus.hidden = false;
+  if (scrapeSpinner) scrapeSpinner.hidden = false;
+  if (scrapeResult) scrapeResult.textContent = 'Running scraping pipeline…';
+
+  try {
+    const body = url ? JSON.stringify({ url }) : '{}';
+    const res = await fetch('/api/scrape', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`,
+      },
+      body,
+    });
+
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      scrapeResult.textContent = `Error: ${data.error || 'Scrape failed'}`;
+    } else {
+      const lines = [
+        `Discovered: ${data.discovered ?? '-'}`,
+        `Downloaded: ${data.downloaded ?? '-'}`,
+        `Unchanged: ${data.unchanged ?? '-'}`,
+        `Errors: ${data.errors ?? '-'}`,
+      ];
+      if (data.ingested?.length > 0) {
+        lines.push(`\nIngested into RAG DB:\n  ${data.ingested.join('\n  ')}`);
+      }
+      scrapeResult.textContent = lines.join('\n');
+    }
+  } catch (e) {
+    scrapeResult.textContent = `Network error: ${e.message}`;
+  } finally {
+    if (runScrapeBtn) runScrapeBtn.disabled = false;
+    if (scrapeSpinner) scrapeSpinner.hidden = true;
+  }
+}
+
+async function loadManifest() {
+  if (scrapeManifest) scrapeManifest.innerHTML = '<p>Loading…</p>';
+
+  try {
+    const res = await fetch('/api/scrape/status', {
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+
+    if (!data.ok) {
+      scrapeManifest.innerHTML = `<p class="error-msg">${escapeHtml(data.error)}</p>`;
+      return;
+    }
+
+    if (!data.entries || data.entries.length === 0) {
+      scrapeManifest.innerHTML = '<p>No scraped documents tracked yet.</p>';
+      return;
+    }
+
+    const rows = data.entries.map(e =>
+      `<tr>
+        <td>${escapeHtml(e.filename || '-')}</td>
+        <td>${e.sizeBytes ? `${(e.sizeBytes / 1024).toFixed(0)} KB` : '-'}</td>
+        <td>${e.downloadedAt ? formatDate(e.downloadedAt) : '-'}</td>
+        <td>${e.lastChecked ? formatDate(e.lastChecked) : '-'}</td>
+      </tr>`
+    ).join('');
+
+    scrapeManifest.innerHTML = `
+      <p>Tracking ${data.totalTracked} document(s)</p>
+      <table class="manifest-table">
+        <thead><tr><th>File</th><th>Size</th><th>Downloaded</th><th>Last Checked</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    scrapeManifest.innerHTML = `<p class="error-msg">Error: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+runScrapeBtn?.addEventListener('click', runScraper);
+loadManifestBtn?.addEventListener('click', loadManifest);
+
+// =========================
+// #114 — Document Watcher UI
+// =========================
+const refreshWatcherBtn = document.getElementById('refresh-watcher-btn');
+const triggerScanBtn = document.getElementById('trigger-scan-btn');
+const watcherRunning = document.getElementById('watcher-running');
+const watcherDirs = document.getElementById('watcher-dirs');
+const watcherLastScan = document.getElementById('watcher-last-scan');
+const watcherScanStatus = document.getElementById('watcher-scan-status');
+const watcherScanResult = document.getElementById('watcher-scan-result');
+const loadHistoryBtn = document.getElementById('load-history-btn');
+const watcherHistory = document.getElementById('watcher-history');
+
+async function loadWatcherStatus() {
+  try {
+    const res = await fetch('/api/watcher/status', {
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+
+    if (!data.ok) return;
+
+    if (watcherRunning) {
+      watcherRunning.textContent = data.running ? 'Active' : 'Stopped';
+      watcherRunning.style.color = data.running ? 'var(--success, #22c55e)' : 'var(--danger, #ef4444)';
+    }
+    if (watcherDirs) watcherDirs.textContent = data.watchDirs?.length ?? 0;
+    if (watcherLastScan) {
+      watcherLastScan.textContent = data.lastScan?.scannedAt
+        ? formatDate(data.lastScan.scannedAt)
+        : 'Never';
+    }
+  } catch (e) {
+    console.error('Watcher status error:', e);
+  }
+}
+
+async function triggerScan() {
+  if (triggerScanBtn) triggerScanBtn.disabled = true;
+  if (watcherScanStatus) watcherScanStatus.hidden = false;
+  if (watcherScanResult) watcherScanResult.textContent = 'Scanning…';
+
+  try {
+    const res = await fetch('/api/watcher/scan', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`,
+      },
+    });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+
+    if (!data.ok) {
+      watcherScanResult.textContent = `Error: ${data.error}`;
+    } else {
+      const lines = [
+        `Scanned at: ${data.scannedAt || '-'}`,
+        `Added: ${data.added?.length ?? 0}`,
+        `Modified: ${data.modified?.length ?? 0}`,
+        `Removed: ${data.removed?.length ?? 0}`,
+        `Unchanged: ${data.unchanged ?? 0}`,
+      ];
+      if (data.added?.length > 0) {
+        lines.push(`\nNew files:\n  ${data.added.map(f => f.filename).join('\n  ')}`);
+      }
+      if (data.modified?.length > 0) {
+        lines.push(`\nModified:\n  ${data.modified.map(f => f.filename).join('\n  ')}`);
+      }
+      if (data.removed?.length > 0) {
+        lines.push(`\nRemoved:\n  ${data.removed.join('\n  ')}`);
+      }
+      watcherScanResult.textContent = lines.join('\n');
+    }
+
+    loadWatcherStatus();
+  } catch (e) {
+    watcherScanResult.textContent = `Network error: ${e.message}`;
+  } finally {
+    if (triggerScanBtn) triggerScanBtn.disabled = false;
+  }
+}
+
+async function loadWatcherHistory() {
+  if (watcherHistory) watcherHistory.innerHTML = '<p>Loading…</p>';
+
+  try {
+    const res = await fetch('/api/watcher/history?limit=10', {
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json();
+
+    if (!data.ok || !data.history?.length) {
+      watcherHistory.innerHTML = '<p>No change history yet.</p>';
+      return;
+    }
+
+    const rows = data.history.map(h => {
+      const changes = (h.added?.length || 0) + (h.modified?.length || 0) + (h.removed?.length || 0);
+      return `<tr>
+        <td>${formatDate(h.scannedAt)}</td>
+        <td>${h.added?.length || 0}</td>
+        <td>${h.modified?.length || 0}</td>
+        <td>${h.removed?.length || 0}</td>
+        <td>${h.unchanged || 0}</td>
+        <td>${changes > 0 ? '<span style="color:var(--warning,#f59e0b)">Changes detected</span>' : '<span style="color:var(--success,#22c55e)">No changes</span>'}</td>
+      </tr>`;
+    }).join('');
+
+    watcherHistory.innerHTML = `
+      <table class="manifest-table">
+        <thead><tr><th>Scanned At</th><th>Added</th><th>Modified</th><th>Removed</th><th>Unchanged</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    watcherHistory.innerHTML = `<p class="error-msg">Error: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+refreshWatcherBtn?.addEventListener('click', loadWatcherStatus);
+triggerScanBtn?.addEventListener('click', triggerScan);
+loadHistoryBtn?.addEventListener('click', loadWatcherHistory);
 
 // =========================
 // Initialize

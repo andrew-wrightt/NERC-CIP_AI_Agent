@@ -19,6 +19,11 @@ A secure, compliance-focused AI assistant for querying NERC-CIP (North American 
 - Admins can upload additional documents
 - Responses include source citations
 
+### Automated Compliance Document Ingestion
+- **Scraping Pipeline (#113)**: Automatically discovers and downloads NERC-CIP standard PDFs from configurable source URLs. Supports manifest-based change tracking with etag/last-modified/SHA-256 deduplication.
+- **Document Change Watcher (#114)**: Monitors public/, uploads/, and scraped/ directories for new, modified, or deleted documents. Automatically triggers re-ingestion when changes are detected. Configurable polling interval.
+- Admin panel "Document Ingestion" tab for manual scrape triggers, manifest inspection, watcher status, and change history.
+
 ### Admin Panel
 - User management (create, edit, delete users)
 - Audit logging for all actions
@@ -69,6 +74,11 @@ Change the default password in production!
 
 - OLLAMA_URL - Ollama API URL (default: http://localhost:11434)
 - JWT_SECRET - JWT signing secret (change in production!)
+- SCRAPE_SOURCES - Comma-separated list of URLs to scrape for CIP PDFs (optional, has built-in defaults)
+- WATCH_INTERVAL_MS - Document watcher polling interval in milliseconds (default: 300000 = 5 min)
+- DISABLE_WATCHER - Set to "true" to disable the automatic document change watcher
+- SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM - Email config for MFA QR code delivery
+- MFA_ISSUER - Name shown in authenticator apps (default: "NERC-CIP AI Agent")
 
 ## Security Notes
 

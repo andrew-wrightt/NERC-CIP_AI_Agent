@@ -17,6 +17,10 @@ import adminRoutes, { authenticateToken, requirePermission } from "./adminRoutes
 // RAG DB (documents/standards/chunks/embeddings)
 import { openRagDb } from "./ragdb.js";
 
+// #113 Scraping pipeline + #114 Document change watcher
+import { Scraper } from "./scraper.js";
+import { DocumentWatcher } from "./watcher.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -26,8 +30,10 @@ app.use(express.json());
 // ---- Static folders ----
 const PUBLIC_DIR = path.join(__dirname, "public");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
+const SCRAPED_DIR = path.join(__dirname, "scraped");
 await fs.mkdir(PUBLIC_DIR, { recursive: true });
 await fs.mkdir(UPLOAD_DIR, { recursive: true });
+await fs.mkdir(SCRAPED_DIR, { recursive: true });
 
 app.use(express.static(PUBLIC_DIR));
 app.use("/uploads", express.static(UPLOAD_DIR));
@@ -718,6 +724,204 @@ app.post("/api/chat", authenticateToken, async (req, res) => {
     res.end();
   }
 });
+
+// ===============================
+// #113 — Scraping pipeline
+// ===============================
+const scraper = new Scraper({
+  downloadDir: SCRAPED_DIR,
+  publicDir: PUBLIC_DIR,
+  sources: (process.env.SCRAPE_SOURCES || "")
+    .split(",")
+    .filter(Boolean)
+    .map((url) => ({ name: url, url: url.trim(), type: "html" }))
+    .concat(
+      // Default NERC source if no env override
+      (process.env.SCRAPE_SOURCES ? [] : [
+        {
+          name: "NERC CIP Standards",
+          url: "https://www.nerc.com/pa/Stand/Pages/CIPStandards.aspx",
+          type: "html",
+        },
+      ])
+    ),
+  log: (...args) => console.log(...args),
+});
+
+/**
+ * Ingest scraped PDFs into the RAG database.
+ * Copies new files into public/ so indexPublicPDFs() picks them up,
+ * then triggers a reindex.
+ */
+async function ingestScrapedFiles(downloadedFiles) {
+  if (!downloadedFiles || downloadedFiles.length === 0) return [];
+
+  const ingested = [];
+  for (const file of downloadedFiles) {
+    if (!file.path || file.status !== "downloaded") continue;
+    try {
+      const destPath = path.join(PUBLIC_DIR, file.filename);
+      await fs.copyFile(file.path, destPath);
+      ingested.push(file.filename);
+      console.log(`[ingest] Copied scraped file to public/: ${file.filename}`);
+    } catch (err) {
+      console.error(`[ingest] Error copying ${file.filename}: ${err.message}`);
+    }
+  }
+
+  if (ingested.length > 0) {
+    console.log(`[ingest] Triggering reindex for ${ingested.length} new file(s)...`);
+    await indexPublicPDFs({ force: false });
+  }
+
+  return ingested;
+}
+
+// Trigger scrape + ingest (admin only)
+app.post(
+  "/api/scrape",
+  authenticateToken,
+  requirePermission("docs:write"),
+  async (req, res) => {
+    try {
+      const { url } = req.body || {};
+
+      let result;
+      if (url) {
+        // Ad-hoc scrape from a specific URL
+        const files = await scraper.scrapeUrl(url);
+        const downloaded = files.filter((f) => f.status === "downloaded");
+        const ingested = await ingestScrapedFiles(downloaded);
+        result = {
+          source: url,
+          discovered: files.length,
+          downloaded: downloaded.length,
+          ingested,
+        };
+      } else {
+        // Full pipeline from configured sources
+        const pipelineResult = await scraper.run();
+        const ingested = await ingestScrapedFiles(pipelineResult.downloaded);
+        result = {
+          discovered: pipelineResult.discovered,
+          downloaded: pipelineResult.downloaded.length,
+          unchanged: pipelineResult.unchanged,
+          errors: pipelineResult.errors.length,
+          ingested,
+        };
+      }
+
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      console.error("Scrape error:", e);
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+// Get scraper manifest / status
+app.get(
+  "/api/scrape/status",
+  authenticateToken,
+  requirePermission("docs:read"),
+  async (_req, res) => {
+    try {
+      const manifest = await scraper.getManifest();
+      res.json({ ok: true, ...manifest });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+// ===============================
+// #114 — Document change watcher
+// ===============================
+const watcher = new DocumentWatcher({
+  watchDirs: [PUBLIC_DIR, UPLOAD_DIR, SCRAPED_DIR],
+  extensions: [".pdf", ".txt", ".md"],
+  pollIntervalMs: Number(process.env.WATCH_INTERVAL_MS) || 5 * 60 * 1000,
+  log: (...args) => console.log(...args),
+  onChanges: async (report) => {
+    console.log(
+      `[watcher] Changes detected — added: ${report.added.length}, ` +
+        `modified: ${report.modified.length}, removed: ${report.removed.length}`
+    );
+
+    // Auto-reindex if files in public/ or scraped/ changed
+    const publicOrScrapedChanges = [...report.added, ...report.modified].filter(
+      (f) => f.dir === PUBLIC_DIR || f.dir === SCRAPED_DIR
+    );
+
+    if (publicOrScrapedChanges.length > 0) {
+      console.log(`[watcher] Auto-triggering reindex for ${publicOrScrapedChanges.length} changed file(s)...`);
+
+      // Copy any scraped changes into public/
+      for (const f of publicOrScrapedChanges) {
+        if (f.dir === SCRAPED_DIR) {
+          try {
+            await fs.copyFile(
+              path.join(SCRAPED_DIR, f.filename),
+              path.join(PUBLIC_DIR, f.filename)
+            );
+          } catch (err) {
+            console.error(`[watcher] Copy error for ${f.filename}: ${err.message}`);
+          }
+        }
+      }
+
+      try {
+        await indexPublicPDFs({ force: true });
+        console.log("[watcher] Reindex complete.");
+      } catch (err) {
+        console.error("[watcher] Reindex failed:", err.message);
+      }
+    }
+  },
+});
+
+// Start watcher if not explicitly disabled
+if (process.env.DISABLE_WATCHER !== "true") {
+  watcher.start().catch((err) => {
+    console.error("[watcher] Failed to start:", err.message);
+  });
+}
+
+// Watcher status endpoint
+app.get(
+  "/api/watcher/status",
+  authenticateToken,
+  requirePermission("docs:read"),
+  (_req, res) => {
+    res.json({ ok: true, ...watcher.getStatus() });
+  }
+);
+
+// Watcher history endpoint
+app.get(
+  "/api/watcher/history",
+  authenticateToken,
+  requirePermission("docs:read"),
+  (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    res.json({ ok: true, history: watcher.getHistory(limit) });
+  }
+);
+
+// Manual trigger scan (admin only)
+app.post(
+  "/api/watcher/scan",
+  authenticateToken,
+  requirePermission("docs:write"),
+  async (_req, res) => {
+    try {
+      const report = await watcher.scan();
+      res.json({ ok: true, ...report });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
 
 // ============
 // Start server

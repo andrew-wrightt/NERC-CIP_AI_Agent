@@ -600,3 +600,125 @@ tr:hover td {
     min-width: 600px;
   }
 }
+
+/* =========================
+   INGESTION TAB (#113 + #114)
+   ========================= */
+.card-description {
+  color: var(--muted);
+  margin: 0.25rem 0 1rem 0;
+  font-size: 0.9rem;
+}
+
+.scrape-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.scrape-controls .form-group {
+  margin-bottom: 0;
+}
+
+.scrape-controls input[type="url"] {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.status-box {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--table-header);
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  position: relative;
+}
+
+.status-box pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  color: var(--text);
+  font-family: 'Courier New', monospace;
+}
+
+.status-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--panel-border);
+  border-top-color: var(--btn-primary-bg);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.manifest-details {
+  margin-top: 1rem;
+}
+
+.manifest-details summary {
+  cursor: pointer;
+  color: var(--btn-primary-bg);
+  font-weight: 500;
+  padding: 0.5rem 0;
+}
+
+.manifest-content {
+  padding: 0.75rem 0;
+}
+
+.manifest-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.manifest-table th,
+.manifest-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--table-border);
+}
+
+.manifest-table th {
+  background: var(--table-header);
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.manifest-table tbody tr:hover {
+  background: var(--table-hover);
+}
+
+.watcher-status-grid {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+
+.watcher-status-grid .stat-card {
+  min-width: 120px;
+}
+
+.watcher-controls {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}

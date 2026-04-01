@@ -14,3 +14,4 @@ services:
       - ./ui/uploads:/app/uploads
       - ./ui/cache:/app/cache
       - ./ui/data:/app/data   # persist users + sessions
+      - ./ui/scraped:/app/scraped  # persisted scraped documents
