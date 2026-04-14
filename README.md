@@ -37,14 +37,14 @@ Implements security controls aligned with:
 ## Tech Stack
 
 - Backend: Node.js, Express
-- AI/ML: Ollama (local LLM), nomic-embed-text (embeddings)
+- AI/ML: Ollama (local LLM — Gemma 4 26B MoE), nomic-embed-text (embeddings)
 - Authentication: JWT, bcrypt
 - Frontend: Vanilla HTML/CSS/JavaScript
 
 ## Prerequisites
 
 - Node.js (v18 or higher)
-- Ollama running locally with mistral:instruct and nomic-embed-text models
+- Ollama running locally with gemma4:26b and nomic-embed-text models
 
 ## Installation
 
@@ -56,14 +56,10 @@ enable gpu usage (check tags on Docker Hub)
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi 
 
 docker run -d --name ollama --gpus all -p 11434:11434 -v ollama:/root/.ollama ollama/ollama:latest
-
-docker exec -it ollama ollama pull mistral:instruct
-
+docker exec -it ollama ollama pull gemma4:26b
 docker exec -it ollama ollama pull nomic-embed-text
-
 docker exec -it ollama ollama list
-
-docker exec -it ollama ollama run mistral:instruct "Say 'GPU test ok' and nothing else." (sanity check)
+docker exec -it ollama ollama run gemma4:26b "Say 'GPU test ok' and nothing else." (sanity check)
 
 docker compose up -d --build
 

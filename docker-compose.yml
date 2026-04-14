@@ -3,7 +3,7 @@ version: "3.9"
 services:
   ui:
     build: ./ui
-    container_name: mistral-ui
+    container_name: gemma4-ui
     restart: unless-stopped
     ports:
       - "5173:5173"

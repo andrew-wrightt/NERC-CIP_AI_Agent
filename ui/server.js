@@ -75,7 +75,7 @@ app.use("/api/admin", adminRoutes);
 
 // ---- Config ----
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const CHAT_MODEL = "mistral:instruct";
+const CHAT_MODEL = "gemma4:e4b";
 const EMBED_MODEL = "nomic-embed-text";
 
 // ===============================
@@ -111,14 +111,14 @@ const stmt = {
 
   // chunk candidates (broad) - adjust LIMIT if you grow large
   fetchChunkCandidates: rag.db.prepare(`
-    SELECT c.text, c.text_hash, c.source_label, c.href
+    SELECT c.text, c.text_hash, c.source_label, c.href, c.page
     FROM chunks c
     LIMIT ?
   `),
 
   // chunk candidates filtered by standard base if user asks CIP-###
   fetchChunksForStandardBase: rag.db.prepare(`
-    SELECT c.text, c.text_hash, c.source_label, c.href
+    SELECT c.text, c.text_hash, c.source_label, c.href, c.page
     FROM chunks c
     JOIN documents d ON d.id = c.doc_id
     WHERE d.standard_base = ?
@@ -268,18 +268,54 @@ async function indexPublicPDFs({ force = false } = {}) {
       }
     }
 
-    const parsed = await pdfParse(buf);
-    const chunks = chunkText(parsed.text || "");
+    // Page-by-page extraction to get page boundaries
+    const pages = [];
+    await pdfParse(buf, {
+      pagerender: (page) =>
+        page.getTextContent().then((tc) => {
+          const text = tc.items
+            .map((item) => (item.str || ""))
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+          pages.push(text);
+          return "";
+        }),
+    });
+
+    // Build combined text + character offset → page number map
+    const pageOffsets = [];
+    let combinedText = "";
+    for (let i = 0; i < pages.length; i++) {
+      const t = (pages[i] || "").trim();
+      if (!t) continue;
+      const start = combinedText.length;
+      combinedText += (combinedText.length > 0 ? " " : "") + t;
+      pageOffsets.push({ start, end: combinedText.length, pageNum: i + 1 });
+    }
+
+    if (!combinedText.trim()) continue;
+
+    // Chunk the COMBINED text (proper ~1000 char chunks with good context)
+    const chunks = chunkText(combinedText, 1000, 300);
     if (!chunks.length) continue;
 
-    // Prepare chunk rows
-    const batchSize = 32;
+    // Helper: find which page a character offset falls on
+    function getPageForOffset(charIdx) {
+      for (const po of pageOffsets) {
+        if (charIdx >= po.start && charIdx < po.end) return po.pageNum;
+      }
+      return pageOffsets.length > 0 ? pageOffsets[pageOffsets.length - 1].pageNum : 1;
+    }
+
+    // Embed and store chunks, tracking page for each
     const allChunkRows = [];
+    const batchSize = 32;
+    let searchFrom = 0;
 
     for (let i = 0; i < chunks.length; i += batchSize) {
       const slice = chunks.slice(i, i + batchSize);
 
-      // For CIP docs, help embeddings see both base and version
       const textsForEmbedding =
         doc?.standard_base && doc?.versioned_id
           ? slice.map((t) => `${doc.standard_base} ${doc.versioned_id}\n${t}`)
@@ -295,19 +331,24 @@ async function indexPublicPDFs({ force = false } = {}) {
             : text
         );
 
-        // Ensure embedding exists (vecs already generated, but store under same hash)
         if (!rag.getEmbeddingVector(text_hash, EMBED_MODEL)) {
           rag.putEmbeddingVector(text_hash, EMBED_MODEL, vecs[j]);
         }
 
+        // Find where this chunk starts in combined text to determine its page
+        const snippet = text.slice(0, 80);
+        const chunkStart = combinedText.indexOf(snippet, searchFrom);
+        const pageNum = chunkStart >= 0 ? getPageForOffset(chunkStart) : 1;
+        if (chunkStart >= 0) searchFrom = chunkStart;
+
         allChunkRows.push({
           doc_id: doc.id,
-          page: null, // public pseudopages
+          page: pageNum,
           chunk_index: i + j,
           text,
           text_hash,
-          source_label: `${pdfName} (pseudopages)`,
-          href: `/${pdfName}`,
+          source_label: pdfName,
+          href: `/${pdfName}#page=${pageNum}`,
         });
       }
     }
@@ -315,7 +356,7 @@ async function indexPublicPDFs({ force = false } = {}) {
     rag.replaceDocumentChunks(doc.id, allChunkRows);
 
     indexedDocs++;
-    console.log(`[index] Public ${pdfName}: ${allChunkRows.length} chunks`);
+    console.log(`[index] Public ${pdfName}: ${allChunkRows.length} chunks, ${pages.length} pages`);
   }
 
   console.log(`[index] Public indexing done. Docs indexed this run: ${indexedDocs}`);
@@ -556,49 +597,110 @@ app.post("/api/reindex", authenticateToken, async (_req, res) => {
 function normalize(s = "") {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
 }
-function keywordScore(query, chunk) {
-  const q = normalize(query);
-  const c = normalize(chunk);
 
-  const keys = [];
-  const idMatch = q.match(/cip[-\s]?0?\d{2,3}(-\d+)?/g);
-  if (idMatch) keys.push(...idMatch.map((x) => x.replace(/\s+/g, "")));
-  keys.push(
-    "purpose",
-    "objective",
-    "to protect",
-    "confidentiality",
-    "integrity",
-    "communications between control centers"
-  );
+// Extract meaningful keywords from the user query (skip stopwords)
+const STOPWORDS = new Set([
+  "a","an","the","is","are","was","were","be","been","being","have","has","had",
+  "do","does","did","will","would","shall","should","may","might","must","can","could",
+  "i","me","my","we","our","you","your","he","she","it","they","them","their",
+  "this","that","these","those","what","which","who","whom","where","when","why","how",
+  "if","then","else","so","but","and","or","not","no","nor","for","to","of","in","on",
+  "at","by","with","from","up","out","off","over","under","about","into","through",
+  "during","before","after","above","below","between","all","each","every","any","some",
+  "such","only","just","than","too","very","also","as","more","most","other","own",
+  "same","both","either","neither","here","there","once","than","specific","requirements",
+  "must","implemented","describe","explain","tell","provide","based","per","within",
+]);
+
+function extractKeywords(query) {
+  return normalize(query)
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOPWORDS.has(w));
+}
+
+function keywordScore(query, chunk) {
+  const c = normalize(chunk);
+  const queryKeywords = extractKeywords(query);
 
   let score = 0;
-  for (const k of keys) if (k && c.includes(k)) score += 1;
-  if (/\bpurpose\s*:/.test(c)) score += 3;
+  for (const kw of queryKeywords) {
+    if (c.includes(kw)) score += 1;
+  }
+
+  // Bonus for CIP identifiers mentioned in both query and chunk
+  const cipIds = normalize(query).match(/cip[-\s]?\d{2,3}(?:[-\s]?\d+)?/g) || [];
+  for (const id of cipIds) {
+    const clean = id.replace(/\s+/g, "");
+    if (c.includes(clean)) score += 3;
+  }
+
   return score;
 }
 
+// Extract ALL CIP base standards from a query (handles both CIP-006 and CIP-006-6)
+function extractCipBases(query) {
+  const matches = (query || "").matchAll(/\bCIP[-\s]?(\d{1,3})(?:[-\s.]?\d+\w*)?/gi);
+  const bases = new Set();
+  for (const m of matches) {
+    const num = String(m[1]).padStart(3, "0");
+    bases.add(`CIP-${num}`);
+  }
+  return Array.from(bases);
+}
+
 // DB-backed retrieval
-async function retrieveTopK(query, k = 6) {
+async function retrieveTopK(query, k = 8) {
   const q = query || "";
   const qNorm = normalize(q);
 
   // Embed query
   const qvec = await embedTextSingle(q);
 
-  // If user mentions a base standard (CIP-005), pull candidates only for that base
-  const baseMatch = q.match(/\bCIP[-\s]?(\d{1,3})(?![-\s]?\d)\b/i);
+  // Extract all CIP standards mentioned in the query
+  const cipBases = extractCipBases(q);
   let candidates;
 
-  if (baseMatch) {
-    const num = String(baseMatch[1]).padStart(3, "0");
-    const base = `CIP-${num}`;
-    candidates = stmt.fetchChunksForStandardBase.all(base, 2500);
+  if (cipBases.length === 1) {
+    // Single standard — filtered search
+    candidates = stmt.fetchChunksForStandardBase.all(cipBases[0], 2500);
+  } else if (cipBases.length > 1) {
+    // Multiple standards — fetch for each and merge
+    const allCandidates = [];
+    for (const base of cipBases) {
+      const rows = stmt.fetchChunksForStandardBase.all(base, 1500);
+      allCandidates.push(...rows);
+    }
+    // Deduplicate by text_hash
+    const seen = new Set();
+    candidates = allCandidates.filter((c) => {
+      if (seen.has(c.text_hash)) return false;
+      seen.add(c.text_hash);
+      return true;
+    });
   } else {
+    // No CIP reference — broad search
     candidates = stmt.fetchChunkCandidates.all(2500);
   }
 
-  if (!candidates.length) return [];
+  // If filtered search returned too few results, supplement with broad search
+  if (cipBases.length > 0 && candidates.length < 20) {
+    const broad = stmt.fetchChunkCandidates.all(2500);
+    const seen = new Set(candidates.map((c) => c.text_hash));
+    for (const c of broad) {
+      if (!seen.has(c.text_hash)) {
+        candidates.push(c);
+        seen.add(c.text_hash);
+      }
+    }
+  }
+
+  if (!candidates.length) {
+    console.warn("[retrieve] No chunk candidates found at all.");
+    return [];
+  }
+
+  console.log(`[retrieve] query: "${q.slice(0, 80)}..." | CIP bases: [${cipBases.join(", ")}] | candidates: ${candidates.length}`);
 
   // Bulk load embeddings for candidate hashes
   const hashes = candidates.map((c) => c.text_hash).filter(Boolean);
@@ -613,68 +715,95 @@ async function retrieveTopK(query, k = 6) {
     const cosBase = cosineSim(qvec, vec) || 0;
     let kw = keywordScore(q, c.text) || 0;
 
-    // mild boost if user mentions label-ish strings
+    // Boost if chunk's source label matches a mentioned standard
     const label = (c.source_label || "").toLowerCase();
-    if (label && qNorm.includes(label)) kw += 2;
+    for (const base of cipBases) {
+      if (label.includes(base.toLowerCase())) kw += 2;
+    }
 
-    const blended = cosBase * 0.7 + Math.min(kw, 6) * 0.3;
+    const blended = cosBase * 0.6 + Math.min(kw, 10) * 0.4;
     scored.push({
       score: blended,
       chunk: c.text,
       source: c.source_label,
       href: c.href || null,
+      page: c.page || null,
     });
   }
 
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, k);
+
+  const topK = scored.slice(0, k);
+  if (topK.length > 0) {
+    console.log(`[retrieve] Top result: score=${topK[0].score.toFixed(3)} source="${topK[0].source}" chunk="${topK[0].chunk.slice(0, 60)}..."`);
+  }
+  return topK;
 }
 
-function buildContextBlock(chunks) {
-  const header = `You are an assistant that must answer **only** using the CONTEXT below.
-If the answer is not present in the context, say:
-"I don't know based on the provided documents."
+function buildSystemPrompt(chunks) {
+  if (!chunks || chunks.length === 0) {
+    return `You are a knowledgeable NERC-CIP compliance assistant. No reference documents were found for this query. Answer using your general knowledge of NERC-CIP standards, but note that your answer is from general knowledge rather than the indexed documents.`;
+  }
 
-CONTEXT BEGIN
-`;
-  const body = chunks
+  const contextBody = chunks
     .map(
-      (c, i) => `[${i + 1}] Source: ${c.source}
-${c.chunk}
-`
+      (c, i) => {
+        const pageInfo = c.page ? `, p.${c.page}` : "";
+        return `[${i + 1}] (${c.source}${pageInfo})\n${c.chunk}`;
+      }
     )
     .join("\n---\n");
-  const footer = "\nCONTEXT END\n";
-  return header + body + footer;
+
+  return `You are an expert NERC-CIP compliance assistant. Below are excerpts from official NERC-CIP standard documents that are relevant to the user's question.
+
+YOUR PRIMARY JOB: Read the documents carefully and answer the question using the information they contain. The answer IS in these documents — look for it thoroughly before concluding it is not there.
+
+<documents>
+${contextBody}
+</documents>
+
+Instructions:
+- Answer directly using the document content above. Cite sources using the bracketed number shown before each excerpt, e.g. "[1]", "[3]". These numbers are clickable links for the user, so use them consistently.
+- Each excerpt header shows the source file and page number. Use these citations so the user can find the exact location.
+- Synthesize information across multiple sources when the question spans multiple standards.
+- If a document discusses the topic but not the exact detail asked about, share what IS there and note what is missing.
+- Use clear, professional language.
+- Only say you cannot find information as an absolute last resort, after carefully checking every document above.`;
 }
 
 // ===============================
 // Retrieval + streaming RAG chat (private)
 // ===============================
 app.post("/api/chat", authenticateToken, async (req, res) => {
-  const { model = CHAT_MODEL, messages = [], temperature = 0.3, max_tokens } = req.body;
+  const { model = CHAT_MODEL, messages = [], temperature = 0.4, max_tokens } = req.body;
 
   const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content || "";
 
   // DB-driven standard normalization (latest version mapping)
   const normalizedUser = rag.normalizeStandardsInQuery(lastUser);
 
-  // Retrieve relevant chunks using the normalized query
+  // Retrieve relevant chunks using the normalized query (more chunks for Gemma 4's larger context)
   let retrieved = [];
   try {
-    retrieved = await retrieveTopK(normalizedUser, 6);
+    retrieved = await retrieveTopK(normalizedUser, 8);
   } catch (e) {
     console.warn("Retrieve error:", e.message);
   }
 
-  const contextMsg = { role: "system", content: buildContextBlock(retrieved) };
-  const guardrailsMsg = {
-    role: "system",
-    content:
-      "If the user's request is outside the supplied CONTEXT, reply: 'I don't know based on the provided documents.'",
-  };
+  // Build ONE consolidated system message (Gemma 4 works best with a single system prompt)
+  const systemMsg = { role: "system", content: buildSystemPrompt(retrieved) };
 
-  const toSend = [guardrailsMsg, contextMsg, ...messages];
+  console.log(`[chat] Retrieved ${retrieved.length} chunks for query: "${lastUser.slice(0, 80)}..."`);
+  if (retrieved.length > 0) {
+    console.log(`[chat] Sources: ${retrieved.map((r) => r.source).join(", ")}`);
+  } else {
+    console.warn("[chat] WARNING: No chunks retrieved — model will use general knowledge only");
+  }
+
+  // Strip any client-side system messages — server owns the system prompt
+  const userAssistantMsgs = messages.filter((m) => m.role !== "system");
+
+  const toSend = [systemMsg, ...userAssistantMsgs];
 
   const upstream = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: "POST",
@@ -685,6 +814,7 @@ app.post("/api/chat", authenticateToken, async (req, res) => {
       stream: true,
       options: {
         temperature,
+        num_ctx: 16384,
         ...(Number.isFinite(max_tokens) ? { num_predict: Number(max_tokens) } : {}),
       },
       keep_alive: "1h",
@@ -706,21 +836,28 @@ app.post("/api/chat", authenticateToken, async (req, res) => {
   } catch {
     // ignore midstream disconnects
   } finally {
-    // Deduplicate sources so each PDF appears only once
+    // Deduplicate sources by filename only (ignore #page= fragments)
     const seen = new Set();
     const sources = [];
 
     for (const r of retrieved) {
       if (!r) continue;
       const label = (r.source || "").replace(/\s+\(pseudopages\)$/, "");
-      const href = r.href || null;
-      const key = `${label}|${href || ""}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      sources.push({ source: label, href });
+      // Strip #page= from href for dedup key
+      const baseHref = (r.href || "").replace(/#.*$/, "") || null;
+      if (seen.has(label)) continue;
+      seen.add(label);
+      sources.push({ source: label, href: baseHref });
     }
 
-    res.write(JSON.stringify({ done: true, sources }) + "\n");
+    // Per-chunk mapping: [1] -> {source, href, page}, [2] -> ...
+    const chunkMap = retrieved.map((r) => ({
+      source: (r?.source || "").replace(/\s+\(pseudopages\)$/, ""),
+      href: r?.href || null,
+      page: r?.page || null,
+    }));
+
+    res.write(JSON.stringify({ done: true, sources, chunkMap }) + "\n");
     res.end();
   }
 });

@@ -1,129 +1,144 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
-  <title>NERC-CIP AI Agent</title>
+  <title>SRP · NERC-CIP Compliance Assistant</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" defer></script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app">
-    <!-- ========== AUTH SCREEN (shown when not logged in) ========== -->
-    <div id="auth-screen" class="auth-screen">
-      <div class="auth-container">
-        <div class="auth-header">
-          <h1>NERC-CIP AI Agent</h1>
-          <p>Secure access to NERC-CIP compliance assistance</p>
-        </div>
-
-        <!-- Login Form -->
-        <form id="login-form" class="auth-form">
-          <h2>Sign In</h2>
-          <div class="form-group">
-            <label for="login-username">Username</label>
-            <input type="text" id="login-username" name="username" required autocomplete="username" />
-          </div>
-          <div class="form-group">
-            <label for="login-password">Password</label>
-            <input type="password" id="login-password" name="password" required autocomplete="current-password" />
-          </div>
-          <div class="form-group">
-            <label for="login-otp">Second Factor / OTP</label>
-            <input
-              type="text"
-              id="login-otp"
-              name="otp"
-              inputmode="numeric"
-              pattern="[0-9]{6}"
-              maxlength="6"
-              placeholder="6-digit code"
-              autocomplete="one-time-code"
-            />
-            <small>Required only if MFA is enabled for your account.</small>
-          </div>
-          <div id="login-error" class="error-msg" hidden></div>
-          <button type="submit" class="btn-primary">Sign In</button>
-          <p class="auth-switch">Don't have an account? <a href="#" id="show-register">Register here</a></p>
-        </form>
-
-        <!-- Register Form -->
-        <form id="register-form" class="auth-form" hidden>
-          <h2>Create Account</h2>
-          <div class="form-group">
-            <label for="register-username">Username</label>
-            <input type="text" id="register-username" name="username" required minlength="3" maxlength="50" autocomplete="username" />
-          </div>
-          <div class="form-group">
-            <label for="register-password">Password</label>
-            <input type="password" id="register-password" name="password" required minlength="8" autocomplete="new-password" />
-            <small>Min 8 characters, needs uppercase, lowercase, and number</small>
-          </div>
-          <div class="form-group">
-            <label for="register-confirm">Confirm Password</label>
-            <input type="password" id="register-confirm" name="confirm" required autocomplete="new-password" />
-          </div>
-          <div id="register-error" class="error-msg" hidden></div>
-          <div id="register-success" class="success-msg" hidden></div>
-          <button type="submit" class="btn-primary">Create Account</button>
-          <p class="auth-switch">Already have an account? <a href="#" id="show-login">Sign in here</a></p>
-        </form>
+  <!-- ========== AUTH SCREEN ========== -->
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-container">
+      <div class="auth-header">
+        <img src="/srp-logo.webp" alt="SRP" class="auth-logo" />
+        <h1>NERC-CIP Compliance Assistant</h1>
+        <p>Secure, AI-powered access to NERC-CIP standards and documentation</p>
       </div>
-    </div>
 
-    <!-- ========== MAIN APP (shown when logged in) ========== -->
-    <div id="main-app" class="main-app" hidden>
-      <header>
-        <h1>NERC-CIP<br/>AI Agent</h1>
-
-        <!-- Right-side controls -->
-        <div class="controls">
-          <!-- User info -->
-          <span id="user-display" class="user-display"></span>
-          
-          <!-- Admin-only controls (hidden for operators) -->
-          <div id="admin-controls" class="admin-controls" hidden>
-            <a href="/admin/" class="admin-link" title="Admin Panel">Admin</a>
-            <input id="filepicker" type="file" accept=".pdf,.txt,.md" multiple class="visually-hidden" />
-            <button id="upload" type="button">Upload Files</button>
-            <div id="upload-status" class="status" aria-live="polite"></div>
-            <details id="mgr" class="mgr">
-              <summary>Manage Files</summary>
-              <ul id="uploads-list" class="uploads"></ul>
-            </details>
-          </div>
-          
-          <label class="toggle" title="Toggle dark mode">
-            <input type="checkbox" id="theme-toggle" aria-label="Toggle dark mode" />
-            <span class="slider"></span>
-            <span class="toggle-text">Dark</span>
-          </label>
-          
-          <button id="logout-btn" class="btn-logout">Logout</button>
+      <form id="login-form" class="auth-form">
+        <h2>Sign In</h2>
+        <div class="form-group">
+          <label for="login-username">Username</label>
+          <input type="text" id="login-username" name="username" required autocomplete="username" />
         </div>
-      </header>
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" name="password" required autocomplete="current-password" />
+        </div>
+        <div class="form-group">
+          <label for="login-otp">Second Factor / OTP</label>
+          <input type="text" id="login-otp" name="otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code" />
+          <small>Required only if MFA is enabled for your account.</small>
+        </div>
+        <div id="login-error" class="error-msg" hidden></div>
+        <button type="submit" class="btn-primary">Sign In</button>
+        <p class="auth-switch">Don't have an account? <a href="#" id="show-register">Register here</a></p>
+      </form>
 
-      <main id="chat" aria-live="polite" aria-busy="false"></main>
+      <form id="register-form" class="auth-form" hidden>
+        <h2>Create Account</h2>
+        <div class="form-group">
+          <label for="register-username">Username</label>
+          <input type="text" id="register-username" name="username" required minlength="3" maxlength="50" autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label for="register-password">Password</label>
+          <input type="password" id="register-password" name="password" required minlength="8" autocomplete="new-password" />
+          <small>Min 8 characters, needs uppercase, lowercase, and number</small>
+        </div>
+        <div class="form-group">
+          <label for="register-confirm">Confirm Password</label>
+          <input type="password" id="register-confirm" name="confirm" required autocomplete="new-password" />
+        </div>
+        <div id="register-error" class="error-msg" hidden></div>
+        <div id="register-success" class="success-msg" hidden></div>
+        <button type="submit" class="btn-primary">Create Account</button>
+        <p class="auth-switch">Already have an account? <a href="#" id="show-login">Sign in here</a></p>
+      </form>
+    </div>
+  </div>
 
-      <!-- message template -->
-      <template id="msg-tpl">
-        <article class="msg">
-          <div class="avatar"></div>
-          <div class="bubble">
-            <div class="content"></div>
-            <details class="cites" hidden>
-              <summary>Sources</summary>
-              <ul class="sources"></ul>
-            </details>
+  <!-- ========== MAIN APP ========== -->
+  <div id="main-app" class="main-app" hidden>
+    <header class="topbar">
+      <div class="topbar-brand">
+        <img src="/srp-logo.webp" alt="SRP" class="brand-logo" />
+        <span class="brand-title">NERC-CIP Compliance Assistant</span>
+      </div>
+      <div class="topbar-actions">
+        <span id="user-display" class="user-chip"></span>
+
+        <div id="admin-controls" class="admin-controls" hidden>
+          <a href="/admin/" class="action-btn" title="Admin Panel">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+            Admin
+          </a>
+          <input id="filepicker" type="file" accept=".pdf,.txt,.md" multiple class="visually-hidden" />
+          <button id="upload" type="button" class="action-btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Upload
+          </button>
+          <div id="upload-status" class="upload-status" aria-live="polite"></div>
+          <details id="mgr" class="mgr">
+            <summary>Manage Files</summary>
+            <ul id="uploads-list" class="uploads"></ul>
+          </details>
+        </div>
+
+        <label class="toggle" title="Toggle theme">
+          <input type="checkbox" id="theme-toggle" aria-label="Toggle dark mode" checked />
+          <span class="slider"></span>
+        </label>
+
+        <button id="logout-btn" class="btn-logout">Logout</button>
+      </div>
+    </header>
+
+    <!-- Chat + Preview split -->
+    <div class="app-body">
+      <div class="chat-col">
+        <main id="chat" aria-live="polite" aria-busy="false"></main>
+
+        <template id="msg-tpl">
+          <article class="msg">
+            <div class="avatar"></div>
+            <div class="bubble">
+              <div class="content"></div>
+              <div class="msg-meta"><span class="msg-time"></span></div>
+              <div class="cites-wrap" hidden>
+                <div class="cites-label">Sources</div>
+                <div class="sources"></div>
+              </div>
+            </div>
+          </article>
+        </template>
+
+        <div id="status" class="status" aria-live="polite"></div>
+
+        <footer class="chat-footer">
+          <div class="input-wrap">
+            <textarea id="prompt" rows="1" placeholder="Ask about CIP standards, requirements, compliance…"></textarea>
+            <button id="send" type="button" aria-label="Send message">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
           </div>
-        </article>
-      </template>
+          <div class="footer-hint">Responses grounded in indexed NERC-CIP documents</div>
+        </footer>
+      </div>
 
-      <div id="status" class="status" aria-live="polite"></div>
-
-      <footer>
-        <textarea id="prompt" rows="2" placeholder="Ask about CIP requirements…"></textarea>
-        <button id="send" type="button">Send</button>
-      </footer>
+      <!-- Document preview panel -->
+      <aside id="preview-panel" class="preview-panel" hidden>
+        <div class="preview-header">
+          <span id="preview-title" class="preview-title">Document</span>
+          <button id="preview-close" class="preview-close" aria-label="Close preview">&times;</button>
+        </div>
+        <iframe id="preview-iframe" class="preview-iframe" src="about:blank"></iframe>
+      </aside>
     </div>
   </div>
 
