@@ -11,7 +11,7 @@
     <!-- Login Modal (shown when not authenticated) -->
     <div id="login-modal" class="modal">
       <div class="modal-content">
-        <h2>🔐 Admin Login</h2>
+        <h2>Admin Login</h2>
         <p class="subtitle">NERC-CIP Compliant Access Control</p>
         <form id="login-form">
           <div class="form-group">
@@ -58,9 +58,10 @@
       </header>
 
       <nav class="admin-nav">
-        <button class="nav-btn active" data-tab="users">👥 User Management</button>
-        <button class="nav-btn" data-tab="audit">📋 Audit Log</button>
-        <button class="nav-btn" data-tab="system">⚙️ System Info</button>
+        <button class="nav-btn active" data-tab="users">User Management</button>
+        <button class="nav-btn" data-tab="ingestion">Document Ingestion</button>
+        <button class="nav-btn" data-tab="audit">Audit Log</button>
+        <button class="nav-btn" data-tab="system">System Info</button>
       </nav>
 
       <main class="admin-main">
@@ -103,6 +104,78 @@
                 <!-- Populated by JS -->
               </tbody>
             </table>
+          </div>
+        </section>
+
+        <!-- Document Ingestion Tab (#113 + #114) -->
+        <section id="tab-ingestion" class="tab-content">
+          <div class="section-header">
+            <h2>Document Ingestion</h2>
+          </div>
+
+          <!-- Scraping Pipeline (#113) -->
+          <div class="info-card" style="margin-bottom: 1.5rem;">
+            <h3>Scraping Pipeline</h3>
+            <p class="card-description">Automatically discover and download NERC-CIP standard PDFs from external sources.</p>
+
+            <div class="scrape-controls">
+              <div class="form-group" style="flex: 1;">
+                <label for="scrape-url">Source URL (optional)</label>
+                <input type="url" id="scrape-url" placeholder="Leave blank to use configured sources" />
+              </div>
+              <button id="run-scrape-btn" class="btn-primary">Run Scraper</button>
+            </div>
+
+            <div id="scrape-status" class="status-box" hidden>
+              <div class="status-spinner" id="scrape-spinner" hidden></div>
+              <pre id="scrape-result"></pre>
+            </div>
+
+            <details class="manifest-details">
+              <summary>Scraper Manifest</summary>
+              <div id="scrape-manifest" class="manifest-content">
+                <p>Click to load manifest status...</p>
+              </div>
+              <button id="load-manifest-btn" class="btn-secondary" style="margin-top: 0.5rem;">Refresh Manifest</button>
+            </details>
+          </div>
+
+          <!-- Document Change Watcher (#114) -->
+          <div class="info-card">
+            <h3>Document Change Watcher</h3>
+            <p class="card-description">Monitors directories for new, modified, or deleted documents and auto-triggers re-ingestion.</p>
+
+            <div class="watcher-status-grid" id="watcher-status-grid">
+              <div class="stat-card">
+                <span class="stat-value" id="watcher-running">—</span>
+                <span class="stat-label">Status</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-value" id="watcher-dirs">—</span>
+                <span class="stat-label">Directories</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-value" id="watcher-last-scan">—</span>
+                <span class="stat-label">Last Scan</span>
+              </div>
+            </div>
+
+            <div class="watcher-controls" style="margin-top: 1rem;">
+              <button id="refresh-watcher-btn" class="btn-secondary">Refresh Status</button>
+              <button id="trigger-scan-btn" class="btn-primary">Trigger Scan Now</button>
+            </div>
+
+            <div id="watcher-scan-status" class="status-box" hidden>
+              <pre id="watcher-scan-result"></pre>
+            </div>
+
+            <details class="manifest-details" style="margin-top: 1rem;">
+              <summary>Change History</summary>
+              <div id="watcher-history" class="manifest-content">
+                <p>Click to load history...</p>
+              </div>
+              <button id="load-history-btn" class="btn-secondary" style="margin-top: 0.5rem;">Refresh History</button>
+            </details>
           </div>
         </section>
 
@@ -150,7 +223,7 @@
           
           <div class="info-grid">
             <div class="info-card">
-              <h3>🔒 NERC-CIP Compliance</h3>
+              <h3>NERC-CIP Compliance</h3>
               <ul class="compliance-list">
                 <li class="compliant">CIP-004: Personnel & Training</li>
                 <li class="compliant">CIP-007: System Security Management</li>
@@ -162,7 +235,7 @@
             </div>
             
             <div class="info-card">
-              <h3>📊 System Status</h3>
+              <h3>System Status</h3>
               <div class="status-item">
                 <span>Server Status</span>
                 <span class="status-badge online">Online</span>
@@ -182,7 +255,7 @@
             </div>
 
             <div class="info-card">
-              <h3>🛡️ Security Roles</h3>
+              <h3>Security Roles</h3>
               <div class="role-info">
                 <strong>admin</strong>
                 <p>Full system access: upload/delete documents, manage users, view audit logs</p>
@@ -239,7 +312,7 @@
     <!-- Confirm Delete Modal -->
     <div id="delete-modal" class="modal" hidden>
       <div class="modal-content modal-sm">
-        <h2>⚠️ Confirm Delete</h2>
+        <h2>Confirm Delete</h2>
         <p>Are you sure you want to delete user <strong id="delete-username"></strong>?</p>
         <p class="warning-text">This action cannot be undone and will be logged for audit purposes.</p>
         <div class="modal-actions">
