@@ -35,9 +35,6 @@ const chatEl = document.getElementById("chat");
 const promptEl = document.getElementById("prompt");
 const sendBtn = document.getElementById("send");
 const statusEl = document.getElementById("status");
-const uploadBtn = document.getElementById("upload");
-const filePicker = document.getElementById("filepicker");
-const uploadStatusEl = document.getElementById("upload-status");
 
 // =========================
 // Theme Logic
@@ -145,7 +142,6 @@ function showMainApp() {
   
   if (currentUser?.role === 'admin') {
     adminControls.hidden = false;
-    refreshUploads();
   } else {
     adminControls.hidden = true;
   }
@@ -492,116 +488,6 @@ async function sendMessage() {
 }
 
 // =========================
-// Upload Functions (Admin Only)
-// =========================
-async function refreshUploads() {
-  if (currentUser?.role !== 'admin') return;
-  
-  try {
-    const res = await fetch("/api/uploads", {
-      headers: { "Authorization": `Bearer ${authToken}` }
-    });
-    const data = await res.json();
-    const listEl = document.getElementById("uploads-list");
-    if (!listEl) return;
-
-    listEl.innerHTML = "";
-    if (!data?.ok || !Array.isArray(data.uploads) || data.uploads.length === 0) {
-      const li = document.createElement("li");
-      li.textContent = "No uploaded files yet.";
-      listEl.appendChild(li);
-      return;
-    }
-
-    data.uploads.forEach(({ filename, storedAs, pages, href }) => {
-      const li = document.createElement("li");
-
-      const left = document.createElement("div");
-      left.className = "meta";
-      const a = document.createElement("a");
-      a.textContent = filename;
-      a.href = href;
-      a.target = "_blank";
-      a.rel = "noopener";
-      left.appendChild(a);
-      if (pages != null) {
-        left.appendChild(document.createTextNode(`  ·  ${pages} page(s)`));
-      }
-
-      const del = document.createElement("button");
-      del.textContent = "Delete";
-      del.addEventListener("click", async () => {
-        if (!confirm(`Delete "${filename}" from uploads and index?`)) return;
-        del.disabled = true;
-        try {
-          const r = await fetch(`/api/uploads/${encodeURIComponent(storedAs)}`, { 
-            method: "DELETE",
-            headers: { "Authorization": `Bearer ${authToken}` }
-          });
-          const j = await r.json();
-          if (!r.ok || !j?.ok) {
-            alert(j?.error || "Delete failed");
-          } else {
-            li.remove();
-            if (uploadStatusEl) uploadStatusEl.textContent = `Deleted ${filename} (${j.removedChunks} chunks removed)`;
-          }
-        } catch (e) {
-          alert(e?.message || "Delete error");
-        } finally {
-          del.disabled = false;
-        }
-      });
-
-      li.appendChild(left);
-      li.appendChild(del);
-      listEl.appendChild(li);
-    });
-  } catch (e) {
-    console.error("refreshUploads error:", e);
-  }
-}
-
-async function uploadFiles(files) {
-  if (!files || files.length === 0) return;
-  if (currentUser?.role !== 'admin') {
-    alert('Only admins can upload files.');
-    return;
-  }
-  
-  if (uploadBtn) uploadBtn.disabled = true;
-  if (uploadStatusEl) uploadStatusEl.textContent = "Uploading and indexing…";
-
-  try {
-    const fd = new FormData();
-    for (const f of files) fd.append("files", f);
-
-    const res = await fetch("/api/upload", { 
-      method: "POST", 
-      body: fd,
-      headers: { "Authorization": `Bearer ${authToken}` }
-    });
-    const data = await res.json();
-    
-    if (res.status === 403) {
-      throw new Error('Only admins can upload files');
-    }
-    if (!res.ok || !data?.ok) throw new Error(data?.error || "Upload failed");
-
-    const names = (data.indexed || []).map(x => x.file).join(", ");
-    if (uploadStatusEl) uploadStatusEl.textContent =
-      `Indexed: ${names || "files"} (Total chunks: ${data.totalChunks ?? "?"})`;
-
-    refreshUploads();
-  } catch (e) {
-    if (uploadStatusEl) uploadStatusEl.textContent = e?.message || "Upload error.";
-    console.error("uploadFiles error:", e);
-  } finally {
-    if (uploadBtn) uploadBtn.disabled = false;
-    if (filePicker) filePicker.value = "";
-  }
-}
-
-// =========================
 // Event Listeners - Chat
 // =========================
 if (promptEl) {
@@ -619,15 +505,6 @@ if (promptEl) {
 }
 if (sendBtn) sendBtn.addEventListener("click", sendMessage);
 
-if (uploadBtn && filePicker) {
-  uploadBtn.addEventListener("click", () => filePicker.click());
-  filePicker.addEventListener("change", (e) => uploadFiles(e.target.files));
-}
-
-const mgr = document.getElementById("mgr");
-mgr?.addEventListener("toggle", () => {
-  if (mgr.open) refreshUploads();
-});
 
 // =========================
 // Document Preview Panel

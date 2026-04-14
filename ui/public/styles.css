@@ -234,8 +234,6 @@ a:hover { text-decoration: underline; }
 .admin-controls { display: flex; align-items: center; gap: 8px; }
 .admin-controls[hidden] { display: none; }
 
-.upload-status { font-size: 11px; color: rgba(255,255,255,.6); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
 .btn-logout {
   padding: 6px 12px; border-radius: 8px;
   background: rgba(220,38,38,.15); border: 1px solid rgba(220,38,38,.25);
@@ -243,16 +241,6 @@ a:hover { text-decoration: underline; }
   font-family: inherit; transition: background .15s;
 }
 .btn-logout:hover { background: rgba(220,38,38,.25); }
-
-/* --- File manager --- */
-.mgr summary { cursor: pointer; color: rgba(255,255,255,.7); font-size: 12px; }
-.uploads { list-style: none; display: grid; gap: 4px; margin-top: 6px; position: absolute; right: 0; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 8px; min-width: 260px; box-shadow: var(--shadow-md); z-index: 100; }
-.uploads li { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border: 1px solid var(--panel-border); border-radius: 6px; font-size: 13px; color: var(--text); }
-.uploads .meta { color: var(--text-secondary); }
-.uploads a { color: var(--link); }
-.uploads button { padding: 4px 10px; border: 1px solid var(--btn-border); border-radius: 6px; background: var(--btn-bg); color: var(--btn-text); cursor: pointer; font-size: 12px; font-family: inherit; }
-.uploads button:hover { background: var(--btn-bg-hover); }
-.mgr { position: relative; }
 
 /* =========================================================
    THEME TOGGLE

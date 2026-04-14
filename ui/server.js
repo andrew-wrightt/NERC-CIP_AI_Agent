@@ -6,8 +6,6 @@ import { fileURLToPath } from "url";
 import fs from "fs/promises";
 import fsSync from "fs";
 import pdfParse from "pdf-parse";
-import multer from "multer";
-
 // Admin / Auth
 import session from "express-session";
 import SQLiteStoreFactory from "connect-sqlite3";
@@ -86,21 +84,6 @@ console.log(`[ragdb] Using ${rag.DB_PATH}`);
 
 // Server-local prepared statements for things ragdb.js doesn’t expose directly
 const stmt = {
-  // list uploads = docs with origin upload
-  listUploadDocs: rag.db.prepare(
-    `SELECT id, filename, stored_as FROM documents WHERE origin='upload' ORDER BY updated_at DESC`
-  ),
-  // count distinct pages in chunks for a doc (uploads)
-  countPagesForDoc: rag.db.prepare(
-    `SELECT COUNT(DISTINCT page) AS n FROM chunks WHERE doc_id=? AND page IS NOT NULL`
-  ),
-  // find upload doc by stored name
-  getUploadDocByStored: rag.db.prepare(
-    `SELECT * FROM documents WHERE origin='upload' AND stored_as=? LIMIT 1`
-  ),
-  // delete a doc (cascades chunks)
-  deleteDocById: rag.db.prepare(`DELETE FROM documents WHERE id=?`),
-
   // corpus stats by source_label
   corpusBySource: rag.db.prepare(`
     SELECT source_label AS source, COUNT(*) AS n
@@ -365,71 +348,6 @@ async function indexPublicPDFs({ force = false } = {}) {
 // Initial index pass (only missing docs)
 await indexPublicPDFs({ force: false });
 
-// ==============
-// Multer upload
-// ==============
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-  filename: (_req, file, cb) => {
-    const safe = `${Date.now()}-${file.originalname.replace(/[^\w.\-]+/g, "_")}`;
-    cb(null, safe);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB
-  fileFilter: (_req, file, cb) => {
-    const ext = (file.originalname.split(".").pop() || "").toLowerCase();
-    const ok = ["pdf", "txt", "md"].includes(ext);
-    if (ok) cb(null, true);
-    else cb(null, false);
-  },
-});
-
-// Page-aware extraction ONLY for uploads
-async function extractUploadedFilePages(absPath, mimetype, originalname) {
-  const buf = await fs.readFile(absPath);
-  const ext = (originalname.split(".").pop() || "").toLowerCase();
-  const isPDF = mimetype === "application/pdf" || ext === "pdf";
-  const isTXT = mimetype.startsWith("text/") || ext === "txt" || ext === "md";
-
-  if (isPDF) {
-    const pages = [];
-    await pdfParse(buf, {
-      pagerender: (page) =>
-        page.getTextContent().then((tc) => {
-          const text = tc.items
-            .map((i) => (i.str || ""))
-            .join(" ")
-            .replace(/\s+/g, " ")
-            .trim();
-          pages.push(text);
-          return "";
-        }),
-    });
-
-    const out = [];
-    for (let i = 0; i < pages.length; i++) {
-      let t = (pages[i] || "").trim();
-      if (!t) continue;
-      t = t.replace(/(Purpose\s*:)(\s*)/i, "$1 ");
-      out.push({ page: i + 1, text: t });
-    }
-    if (out.length) return out;
-
-    const parsed = await pdfParse(buf);
-    return [{ page: 1, text: parsed.text || "" }];
-  }
-
-  if (isTXT) {
-    const txt = buf.toString("utf8");
-    return [{ page: 1, text: txt }];
-  }
-
-  throw new Error("Unsupported file type");
-}
-
 // ===============================
 // API routes (JWT-protected where appropriate)
 // ===============================
@@ -449,136 +367,6 @@ app.get("/api/corpus", authenticateToken, async (_req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
-
-// Upload & index (admins only)
-app.post(
-  "/api/upload",
-  authenticateToken,
-  requirePermission("docs:write"),
-  upload.fields([{ name: "files", maxCount: 20 }, { name: "file", maxCount: 20 }]),
-  async (req, res) => {
-    try {
-      const files = [...(req.files?.files || []), ...(req.files?.file || [])];
-      if (files.length === 0) {
-        return res.status(400).json({ ok: false, error: "No files received" });
-      }
-
-      const results = [];
-      for (const f of files) {
-        // Read file bytes (for hashing + doc registry)
-        const abs = path.join(UPLOAD_DIR, f.filename);
-        const bytes = await fs.readFile(abs);
-
-        // Upsert document row
-        const doc = rag.upsertDocumentFromFile({
-          origin: "upload",
-          stored_as: f.filename,
-          filename: f.originalname,
-          bytes,
-          mime_type: f.mimetype || "application/octet-stream",
-        });
-
-        const pages = await extractUploadedFilePages(
-          f.path,
-          f.mimetype || "application/octet-stream",
-          f.originalname
-        );
-
-        const allChunkRows = [];
-
-        for (const { page, text } of pages) {
-          const chunks = chunkText(text, 1000, 300).filter(Boolean);
-          if (!chunks.length) continue;
-
-          const vecs = await embedTextsWithDbCache(chunks);
-
-          for (let i = 0; i < chunks.length; i++) {
-            const chunk = chunks[i];
-            const text_hash = rag.sha256Text(chunk);
-
-            // ensure embedding stored
-            if (!rag.getEmbeddingVector(text_hash, EMBED_MODEL)) {
-              rag.putEmbeddingVector(text_hash, EMBED_MODEL, vecs[i]);
-            }
-
-            allChunkRows.push({
-              doc_id: doc.id,
-              page,
-              chunk_index: i,
-              text: chunk,
-              text_hash,
-              source_label: `${f.originalname} p.${page}`,
-              href: `/uploads/${f.filename}#page=${page}`,
-            });
-          }
-        }
-
-        // Replace chunks for this doc
-        rag.replaceDocumentChunks(doc.id, allChunkRows);
-
-        results.push({ file: f.originalname, chunks: allChunkRows.length });
-        console.log(`[upload] Indexed ${f.originalname}: ${allChunkRows.length} chunks`);
-      }
-
-      res.json({ ok: true, indexed: results });
-    } catch (e) {
-      console.error("upload handler error:", e);
-      res.status(500).json({ ok: false, error: e.message });
-    }
-  }
-);
-
-// List uploaded files (private)
-app.get("/api/uploads", authenticateToken, requirePermission("docs:read"), async (_req, res) => {
-  try {
-    const docs = stmt.listUploadDocs.all();
-    const uploads = docs.map((d) => {
-      const pages = stmt.countPagesForDoc.get(d.id)?.n ?? null;
-      return {
-        filename: d.filename,
-        storedAs: d.stored_as,
-        href: `/uploads/${d.stored_as}`,
-        pages: pages || null,
-      };
-    });
-    res.json({ ok: true, uploads, totalUploads: uploads.length });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-// Delete an uploaded file (private, admin only)
-app.delete(
-  "/api/uploads/:storedAs",
-  authenticateToken,
-  requirePermission("docs:delete"),
-  async (req, res) => {
-    try {
-      const storedAs = req.params.storedAs;
-
-      // defensive filename guard
-      if (typeof storedAs !== "string" || !/^[A-Za-z0-9._-]+$/.test(storedAs)) {
-        return res.status(400).json({ ok: false, error: "Invalid file id" });
-      }
-
-      const doc = stmt.getUploadDocByStored.get(storedAs);
-      if (!doc) return res.status(404).json({ ok: false, error: "Upload not found" });
-
-      // delete disk file
-      const abs = path.join(UPLOAD_DIR, storedAs);
-      try {
-        await fs.unlink(abs);
-      } catch {}
-
-      // delete doc row (cascades chunks)
-      stmt.deleteDocById.run(doc.id);
-
-      res.json({ ok: true, removedFile: storedAs });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e.message });
-    }
-  }
-);
 
 // Reindex from /public PDFs (private)
 app.post("/api/reindex", authenticateToken, async (_req, res) => {
