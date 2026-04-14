@@ -56,9 +56,13 @@ enable gpu usage (check tags on Docker Hub)
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi 
 
 docker run -d --name ollama --gpus all -p 11434:11434 -v ollama:/root/.ollama ollama/ollama:latest
+
 docker exec -it ollama ollama pull mistral:instruct
+
 docker exec -it ollama ollama pull nomic-embed-text
+
 docker exec -it ollama ollama list
+
 docker exec -it ollama ollama run mistral:instruct "Say 'GPU test ok' and nothing else." (sanity check)
 
 docker compose up -d --build
