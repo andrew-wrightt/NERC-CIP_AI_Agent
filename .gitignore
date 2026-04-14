@@ -17,3 +17,5 @@ ui/cache/
 # OS junk
 .DS_Store
 Thumbs.db
+
+docker-compose.yml

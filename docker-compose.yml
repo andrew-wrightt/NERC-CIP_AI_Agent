@@ -9,7 +9,7 @@ services:
       - "5173:5173"
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
-      - SESSION_SECRET=ce2e9d55be79f3f4b6f8b34d15cc6b730efc2d77c1d13869f8b58d0f9a2b70b4
+      - SESSION_SECRET=ce2e9d55be79f3f4b6f8b34d15cc6b730efc2d77c1d13869f8b58d0f9a2b70b4  
     volumes:
       - ./ui/uploads:/app/uploads
       - ./ui/cache:/app/cache
