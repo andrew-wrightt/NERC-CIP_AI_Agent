@@ -419,6 +419,7 @@ navBtns.forEach(btn => {
     if (tab === 'users') loadUsers();
     if (tab === 'audit') loadAuditLog(auditFilter.value);
     if (tab === 'ingestion') loadWatcherStatus();
+    if (tab === 'feedback') loadFeedback();
   });
 });
 
@@ -720,6 +721,69 @@ async function loadWatcherHistory() {
 refreshWatcherBtn?.addEventListener('click', loadWatcherStatus);
 triggerScanBtn?.addEventListener('click', triggerScan);
 loadHistoryBtn?.addEventListener('click', loadWatcherHistory);
+
+// =========================
+// Feedback
+// =========================
+const feedbackTbody = document.getElementById('feedback-tbody');
+const refreshFeedbackBtn = document.getElementById('refresh-feedback');
+const statFeedbackTotal = document.getElementById('stat-feedback-total');
+const statFeedbackAvg = document.getElementById('stat-feedback-avg');
+
+function renderStars(rating) {
+  if (!rating) return '<span style="color:var(--muted)">—</span>';
+  return '★'.repeat(rating) + '☆'.repeat(5 - rating);
+}
+
+async function loadFeedback() {
+  if (feedbackTbody) feedbackTbody.innerHTML = '<tr><td colspan="4" style="text-align:center">Loading…</td></tr>';
+
+  try {
+    const res = await apiRequest('/feedback');
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    const rows = data.feedback || [];
+
+    if (statFeedbackTotal) statFeedbackTotal.textContent = rows.length;
+    const rated = rows.filter(r => r.rating);
+    if (statFeedbackAvg) {
+      statFeedbackAvg.textContent = rated.length
+        ? (rated.reduce((s, r) => s + r.rating, 0) / rated.length).toFixed(1)
+        : '—';
+    }
+
+    if (!rows.length) {
+      feedbackTbody.innerHTML = '<tr><td colspan="4" style="text-align:center">No feedback submitted yet</td></tr>';
+      return;
+    }
+
+    feedbackTbody.innerHTML = rows.map(f => `
+      <tr data-id="${escapeHtml(f.id)}">
+        <td style="white-space:nowrap">${formatDate(f.created_at)}</td>
+        <td style="font-size:16px;letter-spacing:1px">${renderStars(f.rating)}</td>
+        <td style="max-width:500px;word-break:break-word">${escapeHtml(f.message)}</td>
+        <td><button class="btn-delete" onclick="deleteFeedback('${escapeHtml(f.id)}')">Delete</button></td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    if (feedbackTbody) feedbackTbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--danger)">${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+window.deleteFeedback = async function(id) {
+  if (!confirm('Delete this feedback entry?')) return;
+  try {
+    const res = await apiRequest(`/feedback/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    loadFeedback();
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+};
+
+refreshFeedbackBtn?.addEventListener('click', loadFeedback);
 
 // =========================
 // Initialize

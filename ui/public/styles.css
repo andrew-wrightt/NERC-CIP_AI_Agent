@@ -525,6 +525,51 @@ a:hover { text-decoration: underline; }
 }
 
 /* =========================================================
+   FEEDBACK BUTTON & MODAL
+   ========================================================= */
+
+.modal-overlay { display: none; }
+.modal-overlay:not([hidden]) {
+  display: flex; position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,.45);
+  align-items: center; justify-content: center;
+  padding: 16px;
+}
+.modal-box {
+  background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg); padding: 28px 28px 24px;
+  width: 100%; max-width: 480px;
+  box-shadow: var(--shadow-md);
+}
+.modal-box-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.modal-box-header h2 { margin: 0; font-size: 18px; color: var(--text); }
+.modal-close-btn {
+  background: none; border: none; font-size: 22px; cursor: pointer;
+  color: var(--muted); line-height: 1; padding: 2px 6px;
+}
+.modal-close-btn:hover { color: var(--text); }
+.modal-description {
+  font-size: 13px; color: var(--text-secondary);
+  margin-bottom: 18px; line-height: 1.5;
+}
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;
+}
+
+/* Star rating */
+.star-rating { display: flex; gap: 4px; margin-top: 4px; }
+.star {
+  background: none; border: none; font-size: 26px; cursor: pointer;
+  color: var(--muted); padding: 0; line-height: 1;
+  transition: color .12s, transform .1s;
+}
+.star:hover, .star.active { color: #f59e0b; }
+.star:hover { transform: scale(1.15); }
+
+/* =========================================================
    RESPONSIVE
    ========================================================= */
 @media (max-width: 768px) {

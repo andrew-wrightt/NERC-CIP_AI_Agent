@@ -73,6 +73,11 @@
       <div class="topbar-actions">
         <span id="user-display" class="user-chip"></span>
 
+        <button id="feedback-btn" type="button" class="action-btn" title="Share feedback">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Feedback
+        </button>
+
         <div id="admin-controls" class="admin-controls" hidden>
           <a href="/admin/" class="action-btn" title="Admin Panel">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -129,6 +134,40 @@
         </div>
         <iframe id="preview-iframe" class="preview-iframe" src="about:blank"></iframe>
       </aside>
+    </div>
+  </div>
+
+  <!-- ========== FEEDBACK MODAL ========== -->
+  <div id="feedback-modal" class="modal-overlay" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="feedback-modal-title">
+      <div class="modal-box-header">
+        <h2 id="feedback-modal-title">Share Feedback</h2>
+        <button id="feedback-modal-close" class="modal-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <p class="modal-description">Your feedback is completely anonymous. No account information is collected or stored.</p>
+      <form id="feedback-form">
+        <div class="form-group">
+          <label for="feedback-rating">Rating (optional)</label>
+          <div class="star-rating" id="star-rating" role="radiogroup" aria-label="Rating">
+            <button type="button" class="star" data-value="1" aria-label="1 star">&#9733;</button>
+            <button type="button" class="star" data-value="2" aria-label="2 stars">&#9733;</button>
+            <button type="button" class="star" data-value="3" aria-label="3 stars">&#9733;</button>
+            <button type="button" class="star" data-value="4" aria-label="4 stars">&#9733;</button>
+            <button type="button" class="star" data-value="5" aria-label="5 stars">&#9733;</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="feedback-message">Message</label>
+          <textarea id="feedback-message" rows="7" maxlength="2000" placeholder="What's working well? What could be improved?" required></textarea>
+          <small id="feedback-char-count">0 / 2000</small>
+        </div>
+        <div id="feedback-error" class="error-msg" hidden></div>
+        <div id="feedback-success" class="success-msg" hidden>Thank you for your feedback!</div>
+        <div class="modal-actions">
+          <button type="button" id="feedback-cancel-btn" class="btn-secondary">Cancel</button>
+          <button type="submit" id="feedback-submit-btn" class="btn-primary">Submit Anonymously</button>
+        </div>
+      </form>
     </div>
   </div>
 

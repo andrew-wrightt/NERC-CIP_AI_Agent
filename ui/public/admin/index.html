@@ -78,6 +78,7 @@
         <button class="nav-btn active" data-tab="users">User Management</button>
         <button class="nav-btn" data-tab="ingestion">Document Ingestion</button>
         <button class="nav-btn" data-tab="audit">Audit Log</button>
+        <button class="nav-btn" data-tab="feedback">Feedback</button>
         <button class="nav-btn" data-tab="system">System Info</button>
       </nav>
 
@@ -215,6 +216,39 @@
                 </tr>
               </thead>
               <tbody id="audit-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Feedback Tab -->
+        <section id="tab-feedback" class="tab-content">
+          <div class="section-header">
+            <h2>User Feedback</h2>
+            <div class="filter-group">
+              <button id="refresh-feedback" class="btn-secondary">Refresh</button>
+            </div>
+          </div>
+          <div class="stats-row">
+            <div class="stat-card">
+              <span class="stat-value" id="stat-feedback-total">-</span>
+              <span class="stat-label">Total Responses</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="stat-feedback-avg">-</span>
+              <span class="stat-label">Avg. Rating</span>
+            </div>
+          </div>
+          <div class="table-container">
+            <table id="feedback-table">
+              <thead>
+                <tr>
+                  <th>Submitted</th>
+                  <th>Rating</th>
+                  <th>Message</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="feedback-tbody"></tbody>
             </table>
           </div>
         </section>

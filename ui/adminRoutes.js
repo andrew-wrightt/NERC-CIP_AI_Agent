@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);
+
+CREATE TABLE IF NOT EXISTS feedback (
+  id TEXT PRIMARY KEY,
+  message TEXT NOT NULL,
+  rating INTEGER,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
 `);
 
 function ensureColumn(tableName, columnName, alterSql) {
@@ -758,6 +767,70 @@ router.get("/audit", authenticateToken, requirePermission("audit:read"), (req, r
     ipAddress: log.ip_address,
   }));
   res.json({ ok: true, logs });
+});
+
+// =========================
+// Feedback Routes
+// =========================
+const stmtInsertFeedback = db.prepare(`
+  INSERT INTO feedback (id, message, rating, created_at)
+  VALUES (@id, @message, @rating, @created_at)
+`);
+
+const stmtListFeedback = db.prepare(`
+  SELECT id, message, rating, created_at
+  FROM feedback
+  ORDER BY created_at DESC
+  LIMIT ?
+`);
+
+const stmtDeleteFeedback = db.prepare(`DELETE FROM feedback WHERE id = ?`);
+
+// Submit anonymous feedback (no auth required)
+router.post("/feedback", (req, res) => {
+  const { message, rating } = req.body || {};
+
+  if (!message || typeof message !== "string" || message.trim().length === 0) {
+    return res.status(400).json({ ok: false, error: "Feedback message is required" });
+  }
+
+  if (message.trim().length > 2000) {
+    return res.status(400).json({ ok: false, error: "Feedback must be 2000 characters or fewer" });
+  }
+
+  if (rating !== undefined && rating !== null) {
+    const r = Number(rating);
+    if (!Number.isInteger(r) || r < 1 || r > 5) {
+      return res.status(400).json({ ok: false, error: "Rating must be an integer between 1 and 5" });
+    }
+  }
+
+  try {
+    stmtInsertFeedback.run({
+      id: uuidv4(),
+      message: message.trim(),
+      rating: rating !== undefined && rating !== null ? Number(rating) : null,
+      created_at: new Date().toISOString(),
+    });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("[feedback] insert error:", e);
+    return res.status(500).json({ ok: false, error: "Failed to save feedback" });
+  }
+});
+
+// List feedback (admin only)
+router.get("/feedback", authenticateToken, requirePermission("audit:read"), (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+  const rows = stmtListFeedback.all(limit);
+  res.json({ ok: true, feedback: rows });
+});
+
+// Delete a feedback entry (admin only)
+router.delete("/feedback/:id", authenticateToken, requirePermission("audit:read"), (req, res) => {
+  const { id } = req.params;
+  stmtDeleteFeedback.run(id);
+  res.json({ ok: true });
 });
 
 export default router;

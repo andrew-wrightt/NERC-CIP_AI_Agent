@@ -536,6 +536,96 @@ function closePreview() {
 previewClose?.addEventListener("click", closePreview);
 
 // =========================
+// Feedback Modal
+// =========================
+const feedbackBtn = document.getElementById('feedback-btn');
+const feedbackModal = document.getElementById('feedback-modal');
+const feedbackForm = document.getElementById('feedback-form');
+const feedbackMessage = document.getElementById('feedback-message');
+const feedbackError = document.getElementById('feedback-error');
+const feedbackSuccess = document.getElementById('feedback-success');
+const feedbackCharCount = document.getElementById('feedback-char-count');
+const feedbackModalClose = document.getElementById('feedback-modal-close');
+const feedbackCancelBtn = document.getElementById('feedback-cancel-btn');
+const starRating = document.getElementById('star-rating');
+
+let selectedRating = null;
+
+function openFeedbackModal() {
+  feedbackModal.hidden = false;
+  feedbackForm.reset();
+  feedbackError.hidden = true;
+  feedbackSuccess.hidden = true;
+  feedbackCharCount.textContent = '0 / 2000';
+  selectedRating = null;
+  starRating?.querySelectorAll('.star').forEach(s => s.classList.remove('active'));
+  feedbackMessage?.focus();
+}
+
+function closeFeedbackModal() {
+  feedbackModal.hidden = true;
+}
+
+feedbackBtn?.addEventListener('click', openFeedbackModal);
+feedbackModalClose?.addEventListener('click', closeFeedbackModal);
+feedbackCancelBtn?.addEventListener('click', closeFeedbackModal);
+
+feedbackModal?.addEventListener('click', (e) => {
+  if (e.target === feedbackModal) closeFeedbackModal();
+});
+
+feedbackMessage?.addEventListener('input', () => {
+  const len = feedbackMessage.value.length;
+  feedbackCharCount.textContent = `${len} / 2000`;
+});
+
+starRating?.addEventListener('click', (e) => {
+  const star = e.target.closest('.star');
+  if (!star) return;
+  selectedRating = parseInt(star.dataset.value, 10);
+  starRating.querySelectorAll('.star').forEach(s => {
+    s.classList.toggle('active', parseInt(s.dataset.value, 10) <= selectedRating);
+  });
+});
+
+feedbackForm?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const message = feedbackMessage.value.trim();
+  if (!message) return;
+
+  feedbackError.hidden = true;
+  feedbackSuccess.hidden = true;
+  const submitBtn = document.getElementById('feedback-submit-btn');
+  submitBtn.disabled = true;
+
+  try {
+    const res = await fetch('/api/admin/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, rating: selectedRating }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Submission failed');
+
+    feedbackSuccess.hidden = false;
+    feedbackForm.reset();
+    feedbackCharCount.textContent = '0 / 2000';
+    selectedRating = null;
+    starRating?.querySelectorAll('.star').forEach(s => s.classList.remove('active'));
+    setTimeout(closeFeedbackModal, 1800);
+  } catch (err) {
+    feedbackError.textContent = err.message;
+    feedbackError.hidden = false;
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && feedbackModal && !feedbackModal.hidden) closeFeedbackModal();
+});
+
+// =========================
 // Initialize
 // =========================
 checkAuth();
