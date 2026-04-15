@@ -3,7 +3,7 @@ version: "3.9"
 services:
   ui:
     build: ./ui
-    container_name: mistral-ui
+    container_name: gemma4-ui
     restart: unless-stopped
     ports:
       - "5173:5173"
@@ -11,7 +11,8 @@ services:
       - OLLAMA_URL=http://host.docker.internal:11434
       - SESSION_SECRET=ce2e9d55be79f3f4b6f8b34d15cc6b730efc2d77c1d13869f8b58d0f9a2b70b4  
     volumes:
+      - ./ui/public:/app/public    # live document drop zone (watcher auto-reindexes)
       - ./ui/uploads:/app/uploads
       - ./ui/cache:/app/cache
-      - ./ui/data:/app/data   # persist users + sessions
+      - ./ui/data:/app/data        # persist users + sessions
       - ./ui/scraped:/app/scraped  # persisted scraped documents

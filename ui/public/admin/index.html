@@ -1,19 +1,27 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
-  <title>Admin Panel - NERC-CIP AI Agent</title>
+  <title>Admin Panel · NERC-CIP Compliance Assistant</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="admin.css" />
 </head>
 <body>
   <div class="admin-app">
-    <!-- Login Modal (shown when not authenticated) -->
-    <div id="login-modal" class="modal">
-      <div class="modal-content">
-        <h2>Admin Login</h2>
-        <p class="subtitle">NERC-CIP Compliant Access Control</p>
-        <form id="login-form">
+
+    <!-- ========== AUTH SCREEN ========== -->
+    <div id="auth-screen" class="auth-screen">
+      <div class="auth-container">
+        <div class="auth-header">
+          <img src="/srp-logo.webp" alt="SRP" class="auth-logo" />
+          <h1>NERC-CIP Compliance Assistant</h1>
+          <p>Admin Panel — Secure Access Required</p>
+        </div>
+        <form id="login-form" class="auth-form">
+          <h2>Sign In</h2>
           <div class="form-group">
             <label for="login-username">Username</label>
             <input type="text" id="login-username" name="username" required autocomplete="username" />
@@ -37,23 +45,32 @@
             <small>Required only if MFA is enabled for your account.</small>
           </div>
           <div id="login-error" class="error-msg" hidden></div>
-          <button type="submit" id="login-btn">Sign In</button>
+          <button type="submit" id="login-btn" class="btn-primary">Sign In</button>
+          <p class="auth-back"><a href="/">← Back to chat</a></p>
         </form>
-        <p class="demo-hint">Demo credentials: admin / admin123</p>
       </div>
     </div>
 
-    <!-- Main Admin Dashboard (shown when authenticated) -->
+    <!-- ========== MAIN DASHBOARD ========== -->
     <div id="dashboard" class="dashboard" hidden>
-      <header class="admin-header">
-        <div class="header-left">
-          <h1>Admin Panel</h1>
-          <span class="badge">NERC-CIP Compliant</span>
+
+      <header class="topbar">
+        <div class="topbar-brand">
+          <img src="/srp-logo.webp" alt="SRP" class="brand-logo" />
+          <span class="brand-title">NERC-CIP Compliance Assistant &middot; Admin</span>
         </div>
-        <div class="header-right">
-          <span id="current-user" class="user-info"></span>
+        <div class="topbar-actions">
+          <a href="/" class="action-btn" title="Back to chat">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Back to Chat
+          </a>
+          <span id="current-user" class="user-chip"></span>
           <span id="user-role" class="role-badge"></span>
-          <button id="logout-btn" class="btn-secondary">Logout</button>
+          <label class="toggle" title="Toggle theme">
+            <input type="checkbox" id="theme-toggle" aria-label="Toggle dark mode" checked />
+            <span class="slider"></span>
+          </label>
+          <button id="logout-btn" class="btn-logout">Logout</button>
         </div>
       </header>
 
@@ -61,17 +78,19 @@
         <button class="nav-btn active" data-tab="users">User Management</button>
         <button class="nav-btn" data-tab="ingestion">Document Ingestion</button>
         <button class="nav-btn" data-tab="audit">Audit Log</button>
+        <button class="nav-btn" data-tab="feedback">Feedback</button>
         <button class="nav-btn" data-tab="system">System Info</button>
       </nav>
 
       <main class="admin-main">
+
         <!-- Users Tab -->
         <section id="tab-users" class="tab-content active">
           <div class="section-header">
             <h2>User Management</h2>
             <button id="add-user-btn" class="btn-primary">+ Add User</button>
           </div>
-          
+
           <div class="stats-row">
             <div class="stat-card">
               <span class="stat-value" id="stat-total-users">-</span>
@@ -100,24 +119,20 @@
                   <th>Actions</th>
                 </tr>
               </thead>
-              <tbody id="users-tbody">
-                <!-- Populated by JS -->
-              </tbody>
+              <tbody id="users-tbody"></tbody>
             </table>
           </div>
         </section>
 
-        <!-- Document Ingestion Tab (#113 + #114) -->
+        <!-- Document Ingestion Tab -->
         <section id="tab-ingestion" class="tab-content">
           <div class="section-header">
             <h2>Document Ingestion</h2>
           </div>
 
-          <!-- Scraping Pipeline (#113) -->
           <div class="info-card" style="margin-bottom: 1.5rem;">
             <h3>Scraping Pipeline</h3>
             <p class="card-description">Automatically discover and download NERC-CIP standard PDFs from external sources.</p>
-
             <div class="scrape-controls">
               <div class="form-group" style="flex: 1;">
                 <label for="scrape-url">Source URL (optional)</label>
@@ -125,12 +140,10 @@
               </div>
               <button id="run-scrape-btn" class="btn-primary">Run Scraper</button>
             </div>
-
             <div id="scrape-status" class="status-box" hidden>
               <div class="status-spinner" id="scrape-spinner" hidden></div>
               <pre id="scrape-result"></pre>
             </div>
-
             <details class="manifest-details">
               <summary>Scraper Manifest</summary>
               <div id="scrape-manifest" class="manifest-content">
@@ -140,11 +153,9 @@
             </details>
           </div>
 
-          <!-- Document Change Watcher (#114) -->
           <div class="info-card">
             <h3>Document Change Watcher</h3>
             <p class="card-description">Monitors directories for new, modified, or deleted documents and auto-triggers re-ingestion.</p>
-
             <div class="watcher-status-grid" id="watcher-status-grid">
               <div class="stat-card">
                 <span class="stat-value" id="watcher-running">—</span>
@@ -159,16 +170,13 @@
                 <span class="stat-label">Last Scan</span>
               </div>
             </div>
-
-            <div class="watcher-controls" style="margin-top: 1rem;">
+            <div class="watcher-controls">
               <button id="refresh-watcher-btn" class="btn-secondary">Refresh Status</button>
               <button id="trigger-scan-btn" class="btn-primary">Trigger Scan Now</button>
             </div>
-
             <div id="watcher-scan-status" class="status-box" hidden>
               <pre id="watcher-scan-result"></pre>
             </div>
-
             <details class="manifest-details" style="margin-top: 1rem;">
               <summary>Change History</summary>
               <div id="watcher-history" class="manifest-content">
@@ -195,7 +203,6 @@
               <button id="refresh-audit" class="btn-secondary">Refresh</button>
             </div>
           </div>
-
           <div class="table-container">
             <table id="audit-table">
               <thead>
@@ -208,9 +215,40 @@
                   <th>IP Address</th>
                 </tr>
               </thead>
-              <tbody id="audit-tbody">
-                <!-- Populated by JS -->
-              </tbody>
+              <tbody id="audit-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Feedback Tab -->
+        <section id="tab-feedback" class="tab-content">
+          <div class="section-header">
+            <h2>User Feedback</h2>
+            <div class="filter-group">
+              <button id="refresh-feedback" class="btn-secondary">Refresh</button>
+            </div>
+          </div>
+          <div class="stats-row">
+            <div class="stat-card">
+              <span class="stat-value" id="stat-feedback-total">-</span>
+              <span class="stat-label">Total Responses</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="stat-feedback-avg">-</span>
+              <span class="stat-label">Avg. Rating</span>
+            </div>
+          </div>
+          <div class="table-container">
+            <table id="feedback-table">
+              <thead>
+                <tr>
+                  <th>Submitted</th>
+                  <th>Rating</th>
+                  <th>Message</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="feedback-tbody"></tbody>
             </table>
           </div>
         </section>
@@ -220,12 +258,11 @@
           <div class="section-header">
             <h2>System Information</h2>
           </div>
-          
           <div class="info-grid">
             <div class="info-card">
               <h3>NERC-CIP Compliance</h3>
               <ul class="compliance-list">
-                <li class="compliant">CIP-004: Personnel & Training</li>
+                <li class="compliant">CIP-004: Personnel &amp; Training</li>
                 <li class="compliant">CIP-007: System Security Management</li>
                 <li class="compliant">Password hashing (bcrypt)</li>
                 <li class="compliant">Session timeout enforcement</li>
@@ -233,7 +270,6 @@
                 <li class="compliant">Role-based access control</li>
               </ul>
             </div>
-            
             <div class="info-card">
               <h3>System Status</h3>
               <div class="status-item">
@@ -246,14 +282,13 @@
               </div>
               <div class="status-item">
                 <span>Session Timeout</span>
-                <span>15 minutes</span>
+                <span>8 hours</span>
               </div>
               <div class="status-item">
                 <span>Max Login Attempts</span>
                 <span>5</span>
               </div>
             </div>
-
             <div class="info-card">
               <h3>Security Roles</h3>
               <div class="role-info">
@@ -267,10 +302,11 @@
             </div>
           </div>
         </section>
+
       </main>
     </div>
 
-    <!-- Add/Edit User Modal -->
+    <!-- ========== ADD/EDIT USER MODAL ========== -->
     <div id="user-modal" class="modal" hidden>
       <div class="modal-content">
         <h2 id="user-modal-title">Add New User</h2>
@@ -286,7 +322,7 @@
             <small>Min 8 characters, requires uppercase, lowercase, number</small>
           </div>
           <div class="form-group">
-            <label for="user-role">Role</label>
+            <label for="user-role-select">Role</label>
             <select id="user-role-select" name="role" required>
               <option value="operator">Operator</option>
               <option value="admin">Admin</option>
@@ -309,7 +345,7 @@
       </div>
     </div>
 
-    <!-- Confirm Delete Modal -->
+    <!-- ========== CONFIRM DELETE MODAL ========== -->
     <div id="delete-modal" class="modal" hidden>
       <div class="modal-content modal-sm">
         <h2>Confirm Delete</h2>
@@ -321,6 +357,7 @@
         </div>
       </div>
     </div>
+
   </div>
 
   <script src="admin.js" type="module"></script>
